@@ -170,22 +170,44 @@ The project includes comprehensive test coverage:
 
 - **Unit Tests**: 11 test cases covering reconciliation logic, annotation setting, and architecture detection
 - **Test Coverage**: ~63% code coverage
-- **Integration Tests**: Ginkgo/BDD tests (require kubebuilder binaries)
+- **Integration Tests**: 8 Ginkgo/BDD tests using envtest with a real Kubernetes API server
+
+#### Quick Start
 
 ```bash
-# Run unit tests (recommended for local development)
+# Run unit tests (no setup required - recommended for local development)
 make test-unit
 
-# Generate coverage report (opens in browser)
+# Generate coverage report
 make test-coverage
 open coverage.html
+```
 
-# Run all tests including integration tests
-# Note: Requires kubebuilder to be installed
+#### Integration Tests
+
+Integration tests use [envtest](https://book.kubebuilder.io/reference/envtest.html) to run against a real Kubernetes API server. These tests verify the full controller lifecycle.
+
+```bash
+# One-time setup: Install kubebuilder (requires sudo)
+make setup-envtest
+
+# Run integration tests
+make test-integration
+
+# Run all tests (unit + integration)
 make test
 ```
 
-**Test Coverage Includes:**
+**Manual kubebuilder installation:**
+```bash
+curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
+chmod +x kubebuilder
+sudo mv kubebuilder /usr/local/bin/
+```
+
+#### Test Coverage
+
+**Unit Tests Cover:**
 - ✅ Empty instance type handling
 - ✅ Standard instance types (a1.2xlarge, p2.16xlarge)
 - ✅ GPU instances with proper GPU count
@@ -193,6 +215,19 @@ make test
 - ✅ Missing/invalid architecture defaults to amd64
 - ✅ Invalid instance types with graceful error handling
 - ✅ Preservation of existing user annotations
+
+**Integration Tests Cover:**
+- ✅ Full reconciliation loop with real Kubernetes API
+- ✅ Annotation updates on MachineSet resources
+- ✅ Event recording for errors
+- ✅ Feature gate behavior (MachineAPIMigration)
+
+#### CI/CD
+
+All tests run automatically in GitHub Actions:
+- Unit tests run on every push and PR
+- Integration tests run in a separate job with kubebuilder pre-installed
+- Coverage reports are uploaded to Codecov
 ```
 
 ### Testing Locally

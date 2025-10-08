@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-coverage test-race clean fmt vet lint image tidy
+.PHONY: build test test-unit test-integration test-coverage test-race setup-envtest clean fmt vet lint image tidy
 
 # Binary name
 BINARY_NAME=capa-annotator
@@ -32,6 +32,21 @@ test:
 # Run unit tests only (skip integration tests that need kubebuilder)
 test-unit:
 	$(GOTEST) -v ./pkg/... -short
+
+# Run integration tests (requires kubebuilder)
+test-integration:
+	@command -v kubebuilder >/dev/null 2>&1 || { echo "kubebuilder not found. Run 'make setup-envtest' or install from https://book.kubebuilder.io/quick-start.html#installation"; exit 1; }
+	$(GOTEST) -v ./pkg/controller -run TestReconciler -timeout 2m
+
+# Setup kubebuilder/envtest for local development (optional)
+setup-envtest:
+	@echo "Installing kubebuilder..."
+	curl -L -o /tmp/kubebuilder "https://go.kubebuilder.io/dl/latest/$$(go env GOOS)/$$(go env GOARCH)"
+	chmod +x /tmp/kubebuilder
+	@echo "Moving kubebuilder to /usr/local/bin (requires sudo)..."
+	sudo mv /tmp/kubebuilder /usr/local/bin/
+	@echo "✓ kubebuilder installed successfully"
+	@kubebuilder version
 
 # Run tests with coverage
 test-coverage:
