@@ -1,0 +1,31 @@
+# Build stage
+FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
+
+WORKDIR /workspace
+
+# Copy go.mod and go.sum
+COPY go.mod go.mod
+COPY go.sum go.sum
+
+# Download dependencies
+RUN go mod download
+
+# Copy the source code
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+
+# Build the binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o capa-annotator ./cmd/controller
+
+# Runtime stage
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+WORKDIR /
+
+# Copy the binary from builder
+COPY --from=builder /workspace/capa-annotator .
+
+# Use non-root user
+USER 65532:65532
+
+ENTRYPOINT ["/capa-annotator"]
