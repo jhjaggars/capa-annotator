@@ -187,23 +187,22 @@ open coverage.html
 
 Integration tests use [envtest](https://book.kubebuilder.io/reference/envtest.html) to run against a real Kubernetes API server. These tests verify the full controller lifecycle.
 
-```bash
-# One-time setup: Install kubebuilder (requires sudo)
-make setup-envtest
+The integration tests use `setup-envtest` from controller-runtime, which automatically downloads the necessary Kubernetes binaries (etcd, kube-apiserver) for the specified version. **No manual installation or sudo required!**
 
-# Run integration tests
+```bash
+# Run integration tests (automatically downloads K8s 1.33.2 binaries if needed)
 make test-integration
 
 # Run all tests (unit + integration)
 make test
 ```
 
-**Manual kubebuilder installation:**
-```bash
-curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
-chmod +x kubebuilder
-sudo mv kubebuilder /usr/local/bin/
-```
+**How it works:**
+- First run downloads kubebuilder assets to `./bin` (~100MB, one-time)
+- Subsequent runs reuse cached binaries
+- Pinned to Kubernetes 1.33.0 for reproducibility
+- No sudo or system-wide installation needed
+- Works on macOS, Linux, and Windows
 
 #### Test Coverage
 
@@ -226,8 +225,9 @@ sudo mv kubebuilder /usr/local/bin/
 
 All tests run automatically in GitHub Actions:
 - Unit tests run on every push and PR
-- Integration tests run in a separate job with kubebuilder pre-installed
+- Integration tests run in a separate job using setup-envtest
 - Coverage reports are uploaded to Codecov
+- No special CI setup required - same Makefile targets work everywhere
 ```
 
 ### Testing Locally

@@ -1,8 +1,13 @@
-.PHONY: build test test-unit test-integration test-coverage test-race setup-envtest clean fmt vet lint image tidy
+.PHONY: build test test-unit test-integration test-coverage test-race clean fmt vet lint image tidy
 
 # Binary name
 BINARY_NAME=capa-annotator
 BIN_DIR=bin
+
+# envtest/kubebuilder configuration
+ENVTEST_K8S_VERSION = 1.33.0
+PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
+ENVTEST = GOFLAGS="-mod=mod" go run sigs.k8s.io/controller-runtime/tools/setup-envtest
 
 # Go parameters
 GOCMD=go
@@ -33,20 +38,10 @@ test:
 test-unit:
 	$(GOTEST) -v ./pkg/... -short
 
-# Run integration tests (requires kubebuilder)
+# Run integration tests (uses setup-envtest to download kubebuilder assets)
 test-integration:
-	@command -v kubebuilder >/dev/null 2>&1 || { echo "kubebuilder not found. Run 'make setup-envtest' or install from https://book.kubebuilder.io/quick-start.html#installation"; exit 1; }
-	$(GOTEST) -v ./pkg/controller -run TestReconciler -timeout 2m
-
-# Setup kubebuilder/envtest for local development (optional)
-setup-envtest:
-	@echo "Installing kubebuilder..."
-	curl -L -o /tmp/kubebuilder "https://go.kubebuilder.io/dl/latest/$$(go env GOOS)/$$(go env GOARCH)"
-	chmod +x /tmp/kubebuilder
-	@echo "Moving kubebuilder to /usr/local/bin (requires sudo)..."
-	sudo mv /tmp/kubebuilder /usr/local/bin/
-	@echo "✓ kubebuilder installed successfully"
-	@kubebuilder version
+	@export KUBEBUILDER_ASSETS=$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path --bin-dir $(PROJECT_DIR)/bin) && \
+		$(GOTEST) -v ./pkg/controller -run TestReconciler -timeout 5m -race
 
 # Run tests with coverage
 test-coverage:
