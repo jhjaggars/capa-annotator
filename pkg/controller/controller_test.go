@@ -390,7 +390,7 @@ func TestReconcile(t *testing.T) {
 			g.Expect(err).ToNot(HaveOccurred())
 
 			fakeClient, err := fakeawsclient.NewClient(nil, "", "", "")
-			Expect(err).ToNot(HaveOccurred())
+			g.Expect(err).ToNot(HaveOccurred())
 			awsClientBuilder := func(client client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache awsclient.RegionCache) (awsclient.Client, error) {
 				return fakeClient, nil
 			}

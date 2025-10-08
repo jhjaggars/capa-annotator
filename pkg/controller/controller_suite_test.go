@@ -40,6 +40,9 @@ var (
 )
 
 func TestReconciler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	RegisterFailHandler(Fail)
 
 	RunSpecs(t, "Controller Suite")

@@ -1,4 +1,4 @@
-.PHONY: build test clean fmt vet lint image
+.PHONY: build test test-unit test-coverage test-race clean fmt vet lint image tidy
 
 # Binary name
 BINARY_NAME=capa-annotator
@@ -28,6 +28,20 @@ build:
 # Run tests
 test:
 	$(GOTEST) -v ./...
+
+# Run unit tests only (skip integration tests that need kubebuilder)
+test-unit:
+	$(GOTEST) -v ./pkg/... -short
+
+# Run tests with coverage
+test-coverage:
+	$(GOTEST) -v -short -coverprofile=coverage.out ./...
+	$(GOCMD) tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report generated: coverage.html"
+
+# Run tests with race detector
+test-race:
+	$(GOTEST) -v -race ./...
 
 # Run go vet
 vet:
