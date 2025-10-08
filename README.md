@@ -98,9 +98,177 @@ spec:
 - `--health-addr` - Health check address (default: `:9440`)
 - `--feature-gates` - Feature gate configuration
 
-### Environment Variables
+### AWS Authentication
 
-AWS credentials are read from Kubernetes secrets referenced in the MachineSet provider specs.
+The controller supports two authentication methods:
+
+#### 1. IRSA (IAM Roles for Service Accounts) - Recommended
+
+IRSA provides a more secure authentication method using projected service account tokens instead of static credentials.
+
+**Prerequisites:**
+- OpenShift cluster on AWS with OIDC provider configured
+- IAM role with appropriate EC2 permissions
+- IAM role trust policy configured for the cluster's OIDC provider
+
+**IAM Role Trust Policy Example:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/OIDC_PROVIDER_URL"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "OIDC_PROVIDER_URL:sub": "system:serviceaccount:openshift-machine-api:capa-annotator"
+        }
+      }
+    }
+  ]
+}
+```
+
+**IAM Role Permissions Required:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeRegions"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Deployment Configuration:**
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capa-annotator
+  namespace: openshift-machine-api
+  annotations:
+    # Note: Annotation format may vary based on OIDC provider
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capa-annotator
+  namespace: openshift-machine-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: capa-annotator
+  template:
+    metadata:
+      labels:
+        app: capa-annotator
+    spec:
+      serviceAccountName: capa-annotator
+      containers:
+      - name: controller
+        image: quay.io/jhjaggars/capa-annotator:latest
+        env:
+        - name: AWS_ROLE_ARN
+          value: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+        volumeMounts:
+        - name: aws-iam-token
+          mountPath: "/var/run/secrets/eks.amazonaws.com/serviceaccount"
+          readOnly: true
+      volumes:
+      - name: aws-iam-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: sts.amazonaws.com
+              expirationSeconds: 3600
+              path: token
+```
+
+**MachineSet Configuration:**
+
+When using IRSA, the `credentialsSecret` field in the MachineSet is optional:
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: my-machineset
+  namespace: openshift-machine-api
+spec:
+  template:
+    spec:
+      providerSpec:
+        value:
+          instanceType: m5.large
+          # credentialsSecret can be omitted when IRSA is configured
+          placement:
+            region: us-east-1
+```
+
+#### 2. Secret-based Authentication - Legacy/Fallback
+
+AWS credentials can be provided via Kubernetes secrets referenced in MachineSet specs.
+
+**MachineSet Configuration:**
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: my-machineset
+  namespace: openshift-machine-api
+spec:
+  template:
+    spec:
+      providerSpec:
+        value:
+          credentialsSecret:
+            name: aws-cloud-credentials
+          instanceType: m5.large
+          placement:
+            region: us-east-1
+```
+
+**AWS Credentials Secret:**
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-cloud-credentials
+  namespace: openshift-machine-api
+type: Opaque
+data:
+  aws_access_key_id: <base64-encoded-access-key>
+  aws_secret_access_key: <base64-encoded-secret-key>
+```
+
+### Authentication Priority
+
+The controller automatically selects the authentication method in the following priority:
+
+1. **IRSA** (highest priority) - If both `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables are set
+2. **Secret-based** (fallback) - If `credentialsSecret` is specified in the MachineSet
+3. **Error** - If neither method is configured
+
+**Benefits of IRSA:**
+- ✅ No static credentials stored in Kubernetes secrets
+- ✅ Automatic token rotation by Kubernetes
+- ✅ Fine-grained IAM permissions per service account
+- ✅ Better security posture and audit trail
+- ✅ Works seamlessly with custom AWS endpoints (GovCloud, China regions)
 
 ## RBAC Requirements
 
@@ -168,7 +336,7 @@ make clean
 
 The project includes comprehensive test coverage:
 
-- **Unit Tests**: 11 test cases covering reconciliation logic, annotation setting, and architecture detection
+- **Unit Tests**: 21 test cases covering reconciliation logic, annotation setting, architecture detection, and IRSA authentication
 - **Test Coverage**: ~63% code coverage
 - **Integration Tests**: 8 Ginkgo/BDD tests using envtest with a real Kubernetes API server
 
@@ -214,6 +382,11 @@ make test
 - ✅ Missing/invalid architecture defaults to amd64
 - ✅ Invalid instance types with graceful error handling
 - ✅ Preservation of existing user annotations
+- ✅ IRSA authentication with both environment variables
+- ✅ IRSA partial configuration error handling
+- ✅ IRSA priority over secret-based authentication
+- ✅ Secret-based authentication fallback
+- ✅ Custom AWS endpoint integration with IRSA
 
 **Integration Tests Cover:**
 - ✅ Full reconciliation loop with real Kubernetes API
