@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
@@ -471,7 +470,7 @@ func sharedCredentialsFileFromSecret(secret *corev1.Secret) (string, error) {
 		return "", fmt.Errorf("invalid secret for aws credentials")
 	}
 
-	f, err := ioutil.TempFile("", "aws-shared-credentials")
+	f, err := os.CreateTemp("", "aws-shared-credentials")
 	if err != nil {
 		return "", fmt.Errorf("failed to create file for shared credentials: %v", err)
 	}

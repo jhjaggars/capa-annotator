@@ -34,7 +34,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/component-base/featuregate"
 	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/klogr"
+	"k8s.io/klog/v2/textlogger"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -106,7 +106,9 @@ func main() {
 	gateOpts.AddFlagsToGoFlagSet(nil)
 
 	klog.InitFlags(nil)
-	flag.Set("logtostderr", "true")
+	if err := flag.Set("logtostderr", "true"); err != nil {
+		klog.Fatalf("Error setting logtostderr flag: %v", err)
+	}
 	flag.Parse()
 
 	if *printVersion {
@@ -184,11 +186,13 @@ func main() {
 	if err != nil {
 		klog.Fatal(err)
 	}
-	mgr.Add(startCache)
+	if err := mgr.Add(startCache); err != nil {
+		klog.Fatalf("Error adding start cache to manager: %v", err)
+	}
 
 	describeRegionsCache := awsclient.NewRegionCache()
 
-	ctrl.SetLogger(klogr.New())
+	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 	setupLog := ctrl.Log.WithName("setup")
 
 	if err := (&machinesetcontroller.Reconciler{

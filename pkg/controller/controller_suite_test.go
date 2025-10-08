@@ -50,9 +50,9 @@ func TestReconciler(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("..", "..", "vendor", "github.com", "openshift", "api", "machine", "v1beta1", "zz_generated.crd-manifests")},
+		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd")},
 	}
-	machinev1beta1.AddToScheme(scheme.Scheme)
+	Expect(machinev1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	var err error
 	cfg, err = testEnv.Start()
