@@ -17,18 +17,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 
+	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
+	fakeawsclient "github.com/jhjaggars/capa-annotator/pkg/client/fake"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gtypes "github.com/onsi/gomega/types"
 	openshiftfeatures "github.com/openshift/api/features"
 	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
 	"github.com/openshift/library-go/pkg/features"
-	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
-	fakeawsclient "github.com/jhjaggars/capa-annotator/pkg/client/fake"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -386,6 +387,10 @@ func TestReconcile(t *testing.T) {
 		t.Run(tc.name, func(tt *testing.T) {
 			g := NewWithT(tt)
 
+			// Ensure IRSA environment variables are not set for standard tests
+			os.Unsetenv("AWS_ROLE_ARN")
+			os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+
 			machineSet, err := newTestMachineSet("default", tc.instanceType, tc.existingAnnotations, tc.statusAuthoritativeAPI)
 			g.Expect(err).ToNot(HaveOccurred())
 
@@ -404,6 +409,96 @@ func TestReconcile(t *testing.T) {
 			_, err = r.reconcile(machineSet)
 			g.Expect(err != nil).To(Equal(tc.expectErr))
 			g.Expect(machineSet.Annotations).To(Equal(tc.expectedAnnotations))
+		})
+	}
+}
+
+func TestReconcileWithIRSA(t *testing.T) {
+	testCases := []struct {
+		name                  string
+		instanceType          string
+		withCredentialsSecret bool
+		setIRSAEnvVars        bool
+		expectErr             bool
+		errorContains         string
+		expectedAnnotations   map[string]string
+	}{
+		{
+			name:                  "with IRSA configured (no credentials secret)",
+			instanceType:          "a1.2xlarge",
+			withCredentialsSecret: false,
+			setIRSAEnvVars:        true,
+			expectErr:             false,
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				labelsKey: "kubernetes.io/arch=amd64",
+			},
+		},
+		{
+			name:                  "with IRSA configured and credentials secret (IRSA takes priority)",
+			instanceType:          "a1.2xlarge",
+			withCredentialsSecret: true,
+			setIRSAEnvVars:        true,
+			expectErr:             false,
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				labelsKey: "kubernetes.io/arch=amd64",
+			},
+		},
+		{
+			name:                  "without IRSA or credentials secret",
+			instanceType:          "a1.2xlarge",
+			withCredentialsSecret: false,
+			setIRSAEnvVars:        false,
+			expectErr:             true,
+			errorContains:         "no AWS credentials configured",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(tt *testing.T) {
+			g := NewWithT(tt)
+
+			// Set up or clear IRSA environment variables
+			if tc.setIRSAEnvVars {
+				os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
+				os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
+				defer os.Unsetenv("AWS_ROLE_ARN")
+				defer os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+			} else {
+				os.Unsetenv("AWS_ROLE_ARN")
+				os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+			}
+
+			machineSet, err := newTestMachineSetWithCredentials("default", tc.instanceType, make(map[string]string), machinev1beta1.MachineAuthorityMachineAPI, tc.withCredentialsSecret)
+			g.Expect(err).ToNot(HaveOccurred())
+
+			fakeClient, err := fakeawsclient.NewClient(nil, "", "", "")
+			g.Expect(err).ToNot(HaveOccurred())
+			awsClientBuilder := func(client client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache awsclient.RegionCache) (awsclient.Client, error) {
+				return fakeClient, nil
+			}
+
+			r := Reconciler{
+				recorder:           record.NewFakeRecorder(1),
+				AwsClientBuilder:   awsClientBuilder,
+				InstanceTypesCache: NewInstanceTypesCache(),
+			}
+
+			_, err = r.reconcile(machineSet)
+			if tc.expectErr {
+				g.Expect(err).To(HaveOccurred())
+				if tc.errorContains != "" {
+					g.Expect(err.Error()).To(ContainSubstring(tc.errorContains))
+				}
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(machineSet.Annotations).To(Equal(tc.expectedAnnotations))
+			}
 		})
 	}
 }
@@ -435,6 +530,10 @@ func TestNormalizeArchitecture(t *testing.T) {
 }
 
 func newTestMachineSet(namespace string, instanceType string, existingAnnotations map[string]string, statusAuthoritativeAPI machinev1beta1.MachineAuthority) (*machinev1beta1.MachineSet, error) {
+	return newTestMachineSetWithCredentials(namespace, instanceType, existingAnnotations, statusAuthoritativeAPI, true)
+}
+
+func newTestMachineSetWithCredentials(namespace string, instanceType string, existingAnnotations map[string]string, statusAuthoritativeAPI machinev1beta1.MachineAuthority, withCredentialsSecret bool) (*machinev1beta1.MachineSet, error) {
 	// Copy anntotations map so we don't modify the input
 	annotations := make(map[string]string)
 	for k, v := range existingAnnotations {
@@ -443,13 +542,18 @@ func newTestMachineSet(namespace string, instanceType string, existingAnnotation
 
 	machineProviderSpec := &machinev1beta1.AWSMachineProviderConfig{
 		InstanceType: instanceType,
-		CredentialsSecret: &corev1.LocalObjectReference{
-			Name: "test-credentials",
-		},
 		Placement: machinev1beta1.Placement{
 			Region: "us-east-1",
 		},
 	}
+
+	// Only add CredentialsSecret if requested (to test IRSA path)
+	if withCredentialsSecret {
+		machineProviderSpec.CredentialsSecret = &corev1.LocalObjectReference{
+			Name: "test-credentials",
+		}
+	}
+
 	providerSpec, err := providerSpecFromMachine(machineProviderSpec)
 	if err != nil {
 		return nil, err

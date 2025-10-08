@@ -3,17 +3,17 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/go-logr/logr"
+	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
+	utils "github.com/jhjaggars/capa-annotator/pkg/utils"
 	openshiftfeatures "github.com/openshift/api/features"
 	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
-	"github.com/openshift/machine-api-operator/pkg/controller/machine"
 	mapierrors "github.com/openshift/machine-api-operator/pkg/controller/machine"
 	"github.com/openshift/machine-api-operator/pkg/util"
 	"github.com/openshift/machine-api-operator/pkg/util/conditions"
-	utils "github.com/jhjaggars/capa-annotator/pkg/utils"
-	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,7 +94,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// This is a minor controller meant for annotations, so starts skipping further action
 		// only when the main controller sets the paused condition.
 		// Context for this decision here: https://redhat-internal.slack.com/archives/GE2HQ9QP4/p1747830982876869
-		if conditions.IsTrue(machineSet, machine.PausedCondition) {
+		if conditions.IsTrue(machineSet, mapierrors.PausedCondition) {
 			klog.V(3).Infof("%v: machine set has paused condition, taking no further action", machineSet.Name)
 			return ctrl.Result{}, nil
 		}
@@ -146,11 +146,25 @@ func (r *Reconciler) reconcile(machineSet *machinev1beta1.MachineSet) (ctrl.Resu
 		return ctrl.Result{}, mapierrors.InvalidMachineConfiguration("failed to get providerConfig: %v", err)
 	}
 
-	if providerConfig.CredentialsSecret == nil {
-		return ctrl.Result{}, mapierrors.InvalidMachineConfiguration("nil credentialsSecret for machineSet %s", machineSet.Name)
+	// Determine secret name (may be empty if using IRSA)
+	secretName := ""
+	if providerConfig.CredentialsSecret != nil {
+		secretName = providerConfig.CredentialsSecret.Name
 	}
 
-	awsClient, err := r.AwsClientBuilder(r.Client, providerConfig.CredentialsSecret.Name, machineSet.Namespace, providerConfig.Placement.Region, r.ConfigManagedClient, r.RegionCache)
+	// Check if IRSA is configured
+	roleARN := os.Getenv("AWS_ROLE_ARN")
+	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	hasIRSA := roleARN != "" && tokenFile != ""
+
+	// Validate that either IRSA or secret-based authentication is available
+	if !hasIRSA && secretName == "" {
+		return ctrl.Result{}, mapierrors.InvalidMachineConfiguration(
+			"no AWS credentials configured for machineSet %s: neither IRSA environment variables nor credentialsSecret specified",
+			machineSet.Name)
+	}
+
+	awsClient, err := r.AwsClientBuilder(r.Client, secretName, machineSet.Namespace, providerConfig.Placement.Region, r.ConfigManagedClient, r.RegionCache)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("error creating aws client: %w", err)
 	}

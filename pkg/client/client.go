@@ -360,7 +360,30 @@ func newAWSSession(ctrlRuntimeClient client.Client, secretName, namespace, regio
 		},
 	}
 
-	if secretName != "" {
+	// Check for IRSA environment variables (highest priority)
+	roleARN := os.Getenv("AWS_ROLE_ARN")
+	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+
+	// Validate IRSA configuration - both variables must be present or both must be absent
+	if roleARN != "" || tokenFile != "" {
+		// Fail fast if only one IRSA variable is set
+		if roleARN == "" {
+			return nil, machineapiapierrors.InvalidMachineConfiguration(
+				"AWS_WEB_IDENTITY_TOKEN_FILE is set but AWS_ROLE_ARN is missing")
+		}
+		if tokenFile == "" {
+			return nil, machineapiapierrors.InvalidMachineConfiguration(
+				"AWS_ROLE_ARN is set but AWS_WEB_IDENTITY_TOKEN_FILE is missing")
+		}
+
+		// Both IRSA variables are present - use IRSA authentication
+		klog.Infof("Using IRSA authentication with role: %s", roleARN)
+		// AWS SDK v1 will automatically detect and use web identity credentials
+		// from the environment variables - no explicit configuration needed
+	} else if secretName != "" {
+		// IRSA not configured - fall back to secret-based authentication
+		klog.Info("Using secret-based authentication")
+
 		var secret corev1.Secret
 		if err := ctrlRuntimeClient.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: secretName}, &secret); err != nil {
 			if apimachineryerrors.IsNotFound(err) {
@@ -374,24 +397,30 @@ func newAWSSession(ctrlRuntimeClient client.Client, secretName, namespace, regio
 		}
 		sessionOptions.SharedConfigState = session.SharedConfigEnable
 		sessionOptions.SharedConfigFiles = []string{sharedCredsFile}
+	} else {
+		// Neither IRSA nor secret-based credentials are configured
+		return nil, machineapiapierrors.InvalidMachineConfiguration(
+			"no AWS credentials configured: neither IRSA environment variables nor credentialsSecret specified")
 	}
 
-	// Resolve custom endpoints
+	// Resolve custom endpoints (works for both IRSA and secret-based auth)
 	if err := resolveEndpoints(&sessionOptions.Config, ctrlRuntimeClient, region); err != nil {
 		return nil, err
 	}
 
+	// Set custom CA bundle if configured (works for both IRSA and secret-based auth)
 	if err := useCustomCABundle(&sessionOptions, configManagedClient); err != nil {
 		return nil, fmt.Errorf("failed to set the custom CA bundle: %w", err)
 	}
 
-	// Otherwise default to relying on the IAM role of the masters where the actuator is running:
+	// Create AWS session with the configured options
 	s, err := session.NewSessionWithOptions(sessionOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	// Remove any temporary shared credentials files after session creation so they don't accumulate
+	// Remove any temporary shared credentials files after session creation
+	// (only applicable for secret-based authentication, IRSA doesn't create temp files)
 	if len(sessionOptions.SharedConfigFiles) > 0 {
 		os.Remove(sessionOptions.SharedConfigFiles[0])
 	}
