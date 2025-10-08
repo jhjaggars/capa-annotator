@@ -68,8 +68,8 @@ func NewInstanceTypesCache() InstanceTypesCache {
 	return cache
 }
 
-// GetInstanceType retrievees InstanceType from cache by name. If the cache is stale or nil it is refreshed first from the EC2 API.
-// The fetched instance types are specific to the region of the awsClient. Using region name as cacheID is recomended.
+// GetInstanceType retrieves InstanceType from cache by name. If the cache is stale or nil it is refreshed first from the EC2 API.
+// The fetched instance types are specific to the region of the awsClient. Using region name as cacheID is recommended.
 func (i *instanceTypesCache) GetInstanceType(awsClient awsclient.Client, cacheID string, instanceType string) (InstanceType, error) {
 	i.rwmutex.RLock()
 
@@ -142,7 +142,7 @@ func fetchEC2InstanceTypes(awsClient awsclient.Client) (map[string]InstanceType,
 			return nil, fmt.Errorf("describeInstanceTypes request failed: %w", err)
 		}
 		for _, rawInstanceType := range rawInstanceTypes.InstanceTypes {
-			if rawInstanceType.InstanceType == nil && *rawInstanceType.InstanceType != "" {
+			if rawInstanceType.InstanceType == nil || *rawInstanceType.InstanceType == "" {
 				return nil, fmt.Errorf("describeInstanceTypes returned instance type with nil or empty instance name")
 			}
 			instanceTypes[*rawInstanceType.InstanceType] = transformInstanceType(rawInstanceType)
