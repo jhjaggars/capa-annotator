@@ -475,7 +475,13 @@ func TestReconcileWithIRSA(t *testing.T) {
 			fakeAWSClient, err := fakeawsclient.NewClient(nil, "", "", "")
 			g.Expect(err).ToNot(HaveOccurred())
 			awsClientBuilder := func(client client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
-				return fakeAWSClient, nil
+			// Check IRSA configuration like the real client does
+			roleARN := os.Getenv("AWS_ROLE_ARN")
+			tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+			if roleARN == "" || tokenFile == "" {
+				return nil, fmt.Errorf("IRSA not configured: AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE environment variables required")
+			}
+			return fakeAWSClient, nil
 			}
 
 		r := Reconciler{
