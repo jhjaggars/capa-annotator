@@ -224,6 +224,34 @@ var _ = Describe("MachineDeploymentReconciler", func() {
 			},
 			expectedEvents: []string{"FailedUpdate"},
 		}),
+		Entry("with existing user-provided labels in labelsKey annotation", reconcileTestCase{
+			instanceType: "a1.2xlarge",
+			existingAnnotations: map[string]string{
+				labelsKey: "custom-label=value,node-role.kubernetes.io/worker=",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				// Should preserve user labels and add/update architecture label
+				labelsKey: "custom-label=value,kubernetes.io/arch=amd64,node-role.kubernetes.io/worker=",
+			},
+			expectedEvents: []string{},
+		}),
+		Entry("with existing architecture label that needs updating", reconcileTestCase{
+			instanceType: "m6g.4xlarge", // ARM64 instance
+			existingAnnotations: map[string]string{
+				labelsKey: "kubernetes.io/arch=amd64,custom-label=value",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "16",
+				memoryKey: "65536",
+				gpuKey:    "0",
+				// Should update architecture from amd64 to arm64 and preserve custom label
+				labelsKey: "custom-label=value,kubernetes.io/arch=arm64",
+			},
+			expectedEvents: []string{},
+		}),
 	)
 })
 
@@ -363,6 +391,36 @@ func TestReconcile(t *testing.T) {
 			},
 			expectErr: false,
 		},
+		{
+			name:         "with existing user-provided labels in labelsKey annotation",
+			instanceType: "a1.2xlarge",
+			existingAnnotations: map[string]string{
+				labelsKey: "custom-label=value,node-role.kubernetes.io/worker=",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				// Should preserve user labels and add/update architecture label
+				labelsKey: "custom-label=value,kubernetes.io/arch=amd64,node-role.kubernetes.io/worker=",
+			},
+			expectErr: false,
+		},
+		{
+			name:         "with existing architecture label that needs updating",
+			instanceType: "m6g.4xlarge", // ARM64 instance
+			existingAnnotations: map[string]string{
+				labelsKey: "kubernetes.io/arch=amd64,custom-label=value",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "16",
+				memoryKey: "65536",
+				gpuKey:    "0",
+				// Should update architecture from amd64 to arm64 and preserve custom label
+				labelsKey: "custom-label=value,kubernetes.io/arch=arm64",
+			},
+			expectErr: false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -405,7 +463,7 @@ func TestReconcile(t *testing.T) {
 				InstanceTypesCache: NewInstanceTypesCache(),
 			}
 
-			_, err = r.reconcile(machineDeployment)
+			_, err = r.reconcile(ctx, machineDeployment)
 			g.Expect(err != nil).To(Equal(tc.expectErr))
 			g.Expect(machineDeployment.Annotations).To(Equal(tc.expectedAnnotations))
 		})
@@ -490,7 +548,7 @@ func TestReconcileWithIRSA(t *testing.T) {
 			AwsClientBuilder:   awsClientBuilder,
 			InstanceTypesCache: NewInstanceTypesCache(),
 		}
-			_, err = r.reconcile(machineDeployment)
+			_, err = r.reconcile(ctx, machineDeployment)
 			if tc.expectErr {
 				g.Expect(err).To(HaveOccurred())
 				if tc.errorContains != "" {

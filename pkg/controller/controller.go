@@ -84,7 +84,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	originalMachineDeploymentToPatch := client.MergeFrom(machineDeployment.DeepCopy())
 
-	result, err := r.reconcile(machineDeployment)
+	result, err := r.reconcile(ctx, machineDeployment)
 	if err != nil {
 		logger.Error(err, "Failed to reconcile MachineDeployment")
 		r.recorder.Eventf(machineDeployment, corev1.EventTypeWarning, "ReconcileError", "%v", err)
@@ -98,11 +98,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return result, err
 }
 
-func (r *Reconciler) reconcile(machineDeployment *clusterv1.MachineDeployment) (ctrl.Result, error) {
+func (r *Reconciler) reconcile(ctx context.Context, machineDeployment *clusterv1.MachineDeployment) (ctrl.Result, error) {
 	klog.V(3).Infof("%v: Reconciling MachineDeployment", machineDeployment.Name)
 
 	// Resolve AWSMachineTemplate
-	awsMachineTemplate, err := utils.ResolveAWSMachineTemplate(context.Background(), r.Client, machineDeployment)
+	awsMachineTemplate, err := utils.ResolveAWSMachineTemplate(ctx, r.Client, machineDeployment)
 	if err != nil {
 		klog.Errorf("Failed to resolve AWSMachineTemplate: %v", err)
 		r.recorder.Eventf(machineDeployment, corev1.EventTypeWarning, "FailedUpdate", "Failed to resolve AWSMachineTemplate: %v", err)
@@ -118,7 +118,7 @@ func (r *Reconciler) reconcile(machineDeployment *clusterv1.MachineDeployment) (
 	}
 
 	// Resolve AWS region
-	region, err := utils.ResolveRegion(context.Background(), r.Client, machineDeployment)
+	region, err := utils.ResolveRegion(ctx, r.Client, machineDeployment)
 	if err != nil {
 		klog.Errorf("Failed to resolve AWS region: %v", err)
 		r.recorder.Eventf(machineDeployment, corev1.EventTypeWarning, "FailedUpdate", "Failed to resolve AWS region: %v", err)
