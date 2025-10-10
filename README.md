@@ -1,10 +1,14 @@
 # CAPA Annotator
 
-A standalone Kubernetes controller that assigns CPU, memory, GPU, and architecture annotations to MachineDeployment objects by querying AWS EC2 instance type information.
+A standalone Kubernetes controller that assigns CPU, memory, GPU, and
+architecture annotations to MachineDeployment objects by querying AWS EC2
+instance type information.
 
 ## Overview
 
-This controller provides annotation functionality for Cluster API (CAPI) MachineDeployments on AWS. It enables cluster-autoscaler to scale from zero by providing instance capacity information via annotations.
+This controller provides annotation functionality for Cluster API (CAPI)
+MachineDeployments on AWS. It enables cluster-autoscaler to scale from zero by
+providing instance capacity information via annotations.
 
 ## How It Works
 
@@ -242,22 +246,6 @@ When IRSA is not configured, the controller falls back to the default AWS creden
 2. Shared credentials file (`~/.aws/credentials`)
 3. EC2 instance metadata (for controllers running on EC2)
 
-This fallback makes local development and testing easier.
-
-### Authentication Priority
-
-The controller automatically selects the authentication method in the following priority:
-
-1. **IRSA** (recommended) - If both `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables are set
-2. **Default credential chain** (fallback) - Uses AWS SDK default credential chain
-
-**Benefits of IRSA:**
-- ✅ No static credentials stored in Kubernetes secrets
-- ✅ Automatic token rotation by Kubernetes
-- ✅ Fine-grained IAM permissions per service account
-- ✅ Better security posture and audit trail
-- ✅ Works seamlessly with custom AWS endpoints (GovCloud, China regions)
-
 ## RBAC Requirements
 
 The controller requires the following permissions:
@@ -322,12 +310,6 @@ make clean
 
 ### Testing
 
-The project includes comprehensive test coverage:
-
-- **Unit Tests**: 21 test cases covering reconciliation logic, annotation setting, architecture detection, and IRSA authentication
-- **Test Coverage**: ~63% code coverage
-- **Integration Tests**: 8 Ginkgo/BDD tests using envtest with a real Kubernetes API server
-
 #### Quick Start
 
 ```bash
@@ -341,9 +323,11 @@ open coverage.html
 
 #### Integration Tests
 
-Integration tests use [envtest](https://book.kubebuilder.io/reference/envtest.html) to run against a real Kubernetes API server. These tests verify the full controller lifecycle.
+Integration tests use [envtest](https://book.kubebuilder.io/reference/envtest.html) to run against a Kubernetes API server.
 
-The integration tests use `setup-envtest` from controller-runtime, which automatically downloads the necessary Kubernetes binaries (etcd, kube-apiserver) for the specified version. **No manual installation or sudo required!**
+The integration tests use `setup-envtest` from controller-runtime, which
+automatically downloads the necessary Kubernetes binaries (etcd,
+kube-apiserver) for the specified version.
 
 ```bash
 # Run integration tests (automatically downloads K8s 1.33.2 binaries if needed)
