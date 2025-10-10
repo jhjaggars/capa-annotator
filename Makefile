@@ -7,7 +7,8 @@ BIN_DIR=bin
 # envtest/kubebuilder configuration
 ENVTEST_K8S_VERSION = 1.33.0
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
-ENVTEST = GOFLAGS="-mod=mod" go run sigs.k8s.io/controller-runtime/tools/setup-envtest
+# Use release-0.20 to match our controller-runtime v0.20.4 dependency
+ENVTEST = go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20
 
 # Go parameters
 GOCMD=go

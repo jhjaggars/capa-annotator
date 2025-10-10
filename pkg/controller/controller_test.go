@@ -15,7 +15,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -27,31 +26,30 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gtypes "github.com/onsi/gomega/types"
-	openshiftfeatures "github.com/openshift/api/features"
-	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
-	"github.com/openshift/library-go/pkg/features"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/component-base/featuregate"
 	"k8s.io/utils/ptr"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
-var _ = Describe("MachineSetReconciler", func() {
+var _ = Describe("MachineDeploymentReconciler", func() {
 	var c client.Client
 	var stopMgr context.CancelFunc
 	var fakeRecorder *record.FakeRecorder
 	var namespace *corev1.Namespace
 	fakeClient, err := fakeawsclient.NewClient(nil, "", "", "")
 	Expect(err).ToNot(HaveOccurred())
-	awsClientBuilder := func(client client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache awsclient.RegionCache) (awsclient.Client, error) {
+	awsClientBuilder := func(client client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
 		return fakeClient, nil
 	}
 
@@ -62,15 +60,11 @@ var _ = Describe("MachineSetReconciler", func() {
 			}})
 		Expect(err).ToNot(HaveOccurred())
 
-		gate, err := newDefaultMutableFeatureGate()
-		Expect(err).NotTo(HaveOccurred())
-
 		r := Reconciler{
 			Client:             mgr.GetClient(),
 			Log:                log.Log,
 			AwsClientBuilder:   awsClientBuilder,
 			InstanceTypesCache: NewInstanceTypesCache(),
-			Gate:               gate,
 		}
 		Expect(r.SetupWithManager(mgr, controller.Options{
 			SkipNameValidation: ptr.To(true),
@@ -87,38 +81,41 @@ var _ = Describe("MachineSetReconciler", func() {
 	})
 
 	AfterEach(func() {
-		Expect(deleteMachineSets(c, namespace.Name)).To(Succeed())
+		Expect(deleteMachineDeployments(c, namespace.Name)).To(Succeed())
 		stopMgr()
 	})
 
 	type reconcileTestCase = struct {
-		instanceType           string
-		existingAnnotations    map[string]string
-		expectedAnnotations    map[string]string
-		expectedEvents         []string
-		statusAuthoritativeAPI machinev1beta1.MachineAuthority
+		instanceType        string
+		existingAnnotations map[string]string
+		expectedAnnotations map[string]string
+		expectedEvents      []string
 	}
 
-	DescribeTable("when reconciling MachineSets", func(rtc reconcileTestCase) {
-		machineSet, err := newTestMachineSet(namespace.Name, rtc.instanceType, rtc.existingAnnotations, rtc.statusAuthoritativeAPI)
+	DescribeTable("when reconciling MachineDeployments", func(rtc reconcileTestCase) {
+		// Set IRSA env vars for tests
+		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
+		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
+		defer os.Unsetenv("AWS_ROLE_ARN")
+		defer os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+
+		machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment(namespace.Name, rtc.instanceType, rtc.existingAnnotations)
 		Expect(err).ToNot(HaveOccurred())
-		msStatus := machineSet.Status
 
-		Expect(c.Create(ctx, machineSet)).To(Succeed())
-
-		originalMS := machineSet.DeepCopy()
-		machineSet.Status = msStatus
-
-		Expect(c.Status().Patch(ctx, machineSet, client.MergeFrom(originalMS))).To(Succeed())
+		// Create infrastructure resources first
+		Expect(c.Create(ctx, awsCluster)).To(Succeed())
+		Expect(c.Create(ctx, cluster)).To(Succeed())
+		Expect(c.Create(ctx, awsMachineTemplate)).To(Succeed())
+		Expect(c.Create(ctx, machineDeployment)).To(Succeed())
 
 		Eventually(func() map[string]string {
-			m := &machinev1beta1.MachineSet{}
-			key := client.ObjectKey{Namespace: machineSet.Namespace, Name: machineSet.Name}
-			err := c.Get(ctx, key, m)
+			md := &clusterv1.MachineDeployment{}
+			key := client.ObjectKey{Namespace: machineDeployment.Namespace, Name: machineDeployment.Name}
+			err := c.Get(ctx, key, md)
 			if err != nil {
 				return nil
 			}
-			annotations := m.GetAnnotations()
+			annotations := md.GetAnnotations()
 			if annotations != nil {
 				return annotations
 			}
@@ -136,17 +133,17 @@ var _ = Describe("MachineSetReconciler", func() {
 		}
 		Expect(receivedEvents).To(ConsistOf(eventMatchers))
 	},
-		Entry("with no instanceType set", reconcileTestCase{
-			instanceType:           "",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
-			expectedAnnotations:    make(map[string]string),
-			expectedEvents:         []string{"FailedUpdate"},
-		}),
+	// Skip "with no instanceType set" - CAPA CRDs require instanceType >= 2 chars
+	// This scenario is covered by unit tests without CRD validation
+// 		Entry("with no instanceType set", reconcileTestCase{
+// 			instanceType:        "",
+// 			existingAnnotations: make(map[string]string),
+// 			expectedAnnotations: make(map[string]string),
+// 			expectedEvents:      []string{"FailedUpdate"},
+// 		}),
 		Entry("with a a1.2xlarge", reconcileTestCase{
-			instanceType:           "a1.2xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			instanceType:        "a1.2xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "8",
 				memoryKey: "16384",
@@ -156,9 +153,8 @@ var _ = Describe("MachineSetReconciler", func() {
 			expectedEvents: []string{},
 		}),
 		Entry("with a p2.16xlarge", reconcileTestCase{
-			instanceType:           "p2.16xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			instanceType:        "p2.16xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "64",
 				memoryKey: "749568",
@@ -168,8 +164,7 @@ var _ = Describe("MachineSetReconciler", func() {
 			expectedEvents: []string{},
 		}),
 		Entry("with existing annotations", reconcileTestCase{
-			instanceType:           "a1.2xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
+			instanceType: "a1.2xlarge",
 			existingAnnotations: map[string]string{
 				"existing": "annotation",
 				"annother": "existingAnnotation",
@@ -185,9 +180,8 @@ var _ = Describe("MachineSetReconciler", func() {
 			expectedEvents: []string{},
 		}),
 		Entry("with a m6g.4xlarge (aarch64)", reconcileTestCase{
-			instanceType:           "m6g.4xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			instanceType:        "m6g.4xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "16",
 				memoryKey: "65536",
@@ -197,9 +191,8 @@ var _ = Describe("MachineSetReconciler", func() {
 			expectedEvents: []string{},
 		}),
 		Entry("with an instance type missing the supported architecture (default to amd64)", reconcileTestCase{
-			instanceType:           "m6i.8xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			instanceType:        "m6i.8xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "32",
 				memoryKey: "131072",
@@ -209,9 +202,8 @@ var _ = Describe("MachineSetReconciler", func() {
 			expectedEvents: []string{},
 		}),
 		Entry("with an unrecognized supported architecture (default to amd64)", reconcileTestCase{
-			instanceType:           "m6h.8xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			instanceType:        "m6h.8xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "32",
 				memoryKey: "131072",
@@ -221,8 +213,7 @@ var _ = Describe("MachineSetReconciler", func() {
 			expectedEvents: []string{},
 		}),
 		Entry("with an invalid instanceType", reconcileTestCase{
-			instanceType:           "invalid",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
+			instanceType: "invalid",
 			existingAnnotations: map[string]string{
 				"existing": "annotation",
 				"annother": "existingAnnotation",
@@ -233,31 +224,59 @@ var _ = Describe("MachineSetReconciler", func() {
 			},
 			expectedEvents: []string{"FailedUpdate"},
 		}),
+		Entry("with existing user-provided labels in labelsKey annotation", reconcileTestCase{
+			instanceType: "a1.2xlarge",
+			existingAnnotations: map[string]string{
+				labelsKey: "custom-label=value,node-role.kubernetes.io/worker=",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				// Should preserve user labels and add/update architecture label
+				labelsKey: "custom-label=value,kubernetes.io/arch=amd64,node-role.kubernetes.io/worker=",
+			},
+			expectedEvents: []string{},
+		}),
+		Entry("with existing architecture label that needs updating", reconcileTestCase{
+			instanceType: "m6g.4xlarge", // ARM64 instance
+			existingAnnotations: map[string]string{
+				labelsKey: "kubernetes.io/arch=amd64,custom-label=value",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "16",
+				memoryKey: "65536",
+				gpuKey:    "0",
+				// Should update architecture from amd64 to arm64 and preserve custom label
+				labelsKey: "custom-label=value,kubernetes.io/arch=arm64",
+			},
+			expectedEvents: []string{},
+		}),
 	)
 })
 
-func deleteMachineSets(c client.Client, namespaceName string) error {
-	machineSets := &machinev1beta1.MachineSetList{}
-	err := c.List(ctx, machineSets, client.InNamespace(namespaceName))
+func deleteMachineDeployments(c client.Client, namespaceName string) error {
+	machineDeployments := &clusterv1.MachineDeploymentList{}
+	err := c.List(ctx, machineDeployments, client.InNamespace(namespaceName))
 	if err != nil {
 		return err
 	}
 
-	for _, ms := range machineSets.Items {
-		err := c.Delete(ctx, &ms)
+	for _, md := range machineDeployments.Items {
+		err := c.Delete(ctx, &md)
 		if err != nil {
 			return err
 		}
 	}
 
 	Eventually(func() error {
-		machineSets := &machinev1beta1.MachineSetList{}
-		err := c.List(ctx, machineSets)
+		machineDeployments := &clusterv1.MachineDeploymentList{}
+		err := c.List(ctx, machineDeployments)
 		if err != nil {
 			return err
 		}
-		if len(machineSets.Items) > 0 {
-			return fmt.Errorf("machineSets not deleted")
+		if len(machineDeployments.Items) > 0 {
+			return fmt.Errorf("machineDeployments not deleted")
 		}
 		return nil
 	}, timeout).Should(Succeed())
@@ -267,27 +286,24 @@ func deleteMachineSets(c client.Client, namespaceName string) error {
 
 func TestReconcile(t *testing.T) {
 	testCases := []struct {
-		name                   string
-		instanceType           string
-		statusAuthoritativeAPI machinev1beta1.MachineAuthority
-		existingAnnotations    map[string]string
-		expectedAnnotations    map[string]string
-		expectErr              bool
+		name                string
+		instanceType        string
+		existingAnnotations map[string]string
+		expectedAnnotations map[string]string
+		expectErr           bool
 	}{
 		{
-			name:                   "with no instanceType set",
-			instanceType:           "",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
-			expectedAnnotations:    make(map[string]string),
-			// Expect no error and only log entry in such case as we don't update instance types dynamically
-			expectErr: false,
+			name:                "with no instanceType set",
+			instanceType:        "",
+			existingAnnotations: make(map[string]string),
+			expectedAnnotations: make(map[string]string),
+			// Expect error when instanceType is empty - cannot determine CPU/memory/GPU
+			expectErr: true,
 		},
 		{
-			name:                   "with a a1.2xlarge",
-			instanceType:           "a1.2xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			name:                "with a a1.2xlarge",
+			instanceType:        "a1.2xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "8",
 				memoryKey: "16384",
@@ -297,10 +313,9 @@ func TestReconcile(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name:                   "with a p2.16xlarge",
-			instanceType:           "p2.16xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			name:                "with a p2.16xlarge",
+			instanceType:        "p2.16xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "64",
 				memoryKey: "749568",
@@ -316,7 +331,6 @@ func TestReconcile(t *testing.T) {
 				"existing": "annotation",
 				"annother": "existingAnnotation",
 			},
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
 			expectedAnnotations: map[string]string{
 				"existing": "annotation",
 				"annother": "existingAnnotation",
@@ -334,19 +348,17 @@ func TestReconcile(t *testing.T) {
 				"existing": "annotation",
 				"annother": "existingAnnotation",
 			},
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
 			expectedAnnotations: map[string]string{
 				"existing": "annotation",
 				"annother": "existingAnnotation",
 			},
-			// Expect no error and only log entry in such case as we don't update instance types dynamically
+			// Expect no error for invalid instanceType - logs warning but does not fail reconciliation
 			expectErr: false,
 		},
 		{
-			name:                   "with a m6g.4xlarge (aarch64)",
-			instanceType:           "m6g.4xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			name:                "with a m6g.4xlarge (aarch64)",
+			instanceType:        "m6g.4xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "16",
 				memoryKey: "65536",
@@ -356,10 +368,9 @@ func TestReconcile(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name:                   "with an instance type missing the supported architecture (default to amd64)",
-			instanceType:           "m6i.8xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			name:                "with an instance type missing the supported architecture (default to amd64)",
+			instanceType:        "m6i.8xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "32",
 				memoryKey: "131072",
@@ -369,15 +380,44 @@ func TestReconcile(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name:                   "with an unrecognized supported architecture (default to amd64)",
-			instanceType:           "m6h.8xlarge",
-			statusAuthoritativeAPI: machinev1beta1.MachineAuthorityMachineAPI,
-			existingAnnotations:    make(map[string]string),
+			name:                "with an unrecognized supported architecture (default to amd64)",
+			instanceType:        "m6h.8xlarge",
+			existingAnnotations: make(map[string]string),
 			expectedAnnotations: map[string]string{
 				cpuKey:    "32",
 				memoryKey: "131072",
 				gpuKey:    "0",
 				labelsKey: "kubernetes.io/arch=amd64",
+			},
+			expectErr: false,
+		},
+		{
+			name:         "with existing user-provided labels in labelsKey annotation",
+			instanceType: "a1.2xlarge",
+			existingAnnotations: map[string]string{
+				labelsKey: "custom-label=value,node-role.kubernetes.io/worker=",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				// Should preserve user labels and add/update architecture label
+				labelsKey: "custom-label=value,kubernetes.io/arch=amd64,node-role.kubernetes.io/worker=",
+			},
+			expectErr: false,
+		},
+		{
+			name:         "with existing architecture label that needs updating",
+			instanceType: "m6g.4xlarge", // ARM64 instance
+			existingAnnotations: map[string]string{
+				labelsKey: "kubernetes.io/arch=amd64,custom-label=value",
+			},
+			expectedAnnotations: map[string]string{
+				cpuKey:    "16",
+				memoryKey: "65536",
+				gpuKey:    "0",
+				// Should update architecture from amd64 to arm64 and preserve custom label
+				labelsKey: "custom-label=value,kubernetes.io/arch=arm64",
 			},
 			expectErr: false,
 		},
@@ -387,48 +427,63 @@ func TestReconcile(t *testing.T) {
 		t.Run(tc.name, func(tt *testing.T) {
 			g := NewWithT(tt)
 
-			// Ensure IRSA environment variables are not set for standard tests
-			os.Unsetenv("AWS_ROLE_ARN")
-			os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+			// Set IRSA environment variables for tests
+			os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
+			os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
+			defer os.Unsetenv("AWS_ROLE_ARN")
+			defer os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 
-			machineSet, err := newTestMachineSet("default", tc.instanceType, tc.existingAnnotations, tc.statusAuthoritativeAPI)
+			// Create test resources
+			machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment("default", tc.instanceType, tc.existingAnnotations)
 			g.Expect(err).ToNot(HaveOccurred())
 
-			fakeClient, err := fakeawsclient.NewClient(nil, "", "", "")
+			// Create a scheme with CAPI types
+			testScheme := runtime.NewScheme()
+			g.Expect(scheme.AddToScheme(testScheme)).To(Succeed())
+			g.Expect(clusterv1.AddToScheme(testScheme)).To(Succeed())
+			g.Expect(infrav1.AddToScheme(testScheme)).To(Succeed())
+
+			// Create fake Kubernetes client with test resources
+			fakeK8sClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(machineDeployment, awsMachineTemplate, cluster, awsCluster).
+				Build()
+
+			// Create fake AWS client
+			fakeAWSClient, err := fakeawsclient.NewClient(nil, "", "", "")
 			g.Expect(err).ToNot(HaveOccurred())
-			awsClientBuilder := func(client client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache awsclient.RegionCache) (awsclient.Client, error) {
-				return fakeClient, nil
+			awsClientBuilder := func(client client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
+				return fakeAWSClient, nil
 			}
 
 			r := Reconciler{
+				Client:             fakeK8sClient,
 				recorder:           record.NewFakeRecorder(1),
 				AwsClientBuilder:   awsClientBuilder,
 				InstanceTypesCache: NewInstanceTypesCache(),
 			}
 
-			_, err = r.reconcile(machineSet)
+			_, err = r.reconcile(ctx, machineDeployment)
 			g.Expect(err != nil).To(Equal(tc.expectErr))
-			g.Expect(machineSet.Annotations).To(Equal(tc.expectedAnnotations))
+			g.Expect(machineDeployment.Annotations).To(Equal(tc.expectedAnnotations))
 		})
 	}
 }
 
 func TestReconcileWithIRSA(t *testing.T) {
 	testCases := []struct {
-		name                  string
-		instanceType          string
-		withCredentialsSecret bool
-		setIRSAEnvVars        bool
-		expectErr             bool
-		errorContains         string
-		expectedAnnotations   map[string]string
+		name                string
+		instanceType        string
+		setIRSAEnvVars      bool
+		expectErr           bool
+		errorContains       string
+		expectedAnnotations map[string]string
 	}{
 		{
-			name:                  "with IRSA configured (no credentials secret)",
-			instanceType:          "a1.2xlarge",
-			withCredentialsSecret: false,
-			setIRSAEnvVars:        true,
-			expectErr:             false,
+			name:           "with IRSA configured",
+			instanceType:   "a1.2xlarge",
+			setIRSAEnvVars: true,
+			expectErr:      false,
 			expectedAnnotations: map[string]string{
 				cpuKey:    "8",
 				memoryKey: "16384",
@@ -437,25 +492,16 @@ func TestReconcileWithIRSA(t *testing.T) {
 			},
 		},
 		{
-			name:                  "with IRSA configured and credentials secret (IRSA takes priority)",
-			instanceType:          "a1.2xlarge",
-			withCredentialsSecret: true,
-			setIRSAEnvVars:        true,
-			expectErr:             false,
+			name:           "without IRSA configured - falls back to default credential chain",
+			instanceType:   "a1.2xlarge",
+			setIRSAEnvVars: false,
+			expectErr:      false,
 			expectedAnnotations: map[string]string{
 				cpuKey:    "8",
 				memoryKey: "16384",
 				gpuKey:    "0",
 				labelsKey: "kubernetes.io/arch=amd64",
 			},
-		},
-		{
-			name:                  "without IRSA or credentials secret",
-			instanceType:          "a1.2xlarge",
-			withCredentialsSecret: false,
-			setIRSAEnvVars:        false,
-			expectErr:             true,
-			errorContains:         "no AWS credentials configured",
 		},
 	}
 
@@ -474,22 +520,35 @@ func TestReconcileWithIRSA(t *testing.T) {
 				os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 			}
 
-			machineSet, err := newTestMachineSetWithCredentials("default", tc.instanceType, make(map[string]string), machinev1beta1.MachineAuthorityMachineAPI, tc.withCredentialsSecret)
+			machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment("default", tc.instanceType, make(map[string]string))
 			g.Expect(err).ToNot(HaveOccurred())
 
-			fakeClient, err := fakeawsclient.NewClient(nil, "", "", "")
+		// Create a scheme with CAPI types
+		testScheme := runtime.NewScheme()
+		g.Expect(scheme.AddToScheme(testScheme)).To(Succeed())
+		g.Expect(clusterv1.AddToScheme(testScheme)).To(Succeed())
+		g.Expect(infrav1.AddToScheme(testScheme)).To(Succeed())
+
+		// Create fake Kubernetes client with test resources
+		fakeK8sClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(machineDeployment, awsMachineTemplate, cluster, awsCluster).
+			Build()
+
+			fakeAWSClient, err := fakeawsclient.NewClient(nil, "", "", "")
 			g.Expect(err).ToNot(HaveOccurred())
-			awsClientBuilder := func(client client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache awsclient.RegionCache) (awsclient.Client, error) {
-				return fakeClient, nil
+			awsClientBuilder := func(client client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
+				// Mock supports both IRSA and fallback to default credential chain
+				return fakeAWSClient, nil
 			}
 
-			r := Reconciler{
-				recorder:           record.NewFakeRecorder(1),
-				AwsClientBuilder:   awsClientBuilder,
-				InstanceTypesCache: NewInstanceTypesCache(),
-			}
-
-			_, err = r.reconcile(machineSet)
+		r := Reconciler{
+			Client:             fakeK8sClient,
+			recorder:           record.NewFakeRecorder(1),
+			AwsClientBuilder:   awsClientBuilder,
+			InstanceTypesCache: NewInstanceTypesCache(),
+		}
+			_, err = r.reconcile(ctx, machineDeployment)
 			if tc.expectErr {
 				g.Expect(err).To(HaveOccurred())
 				if tc.errorContains != "" {
@@ -497,7 +556,7 @@ func TestReconcileWithIRSA(t *testing.T) {
 				}
 			} else {
 				g.Expect(err).ToNot(HaveOccurred())
-				g.Expect(machineSet.Annotations).To(Equal(tc.expectedAnnotations))
+				g.Expect(machineDeployment.Annotations).To(Equal(tc.expectedAnnotations))
 			}
 		})
 	}
@@ -529,80 +588,79 @@ func TestNormalizeArchitecture(t *testing.T) {
 	}
 }
 
-func newTestMachineSet(namespace string, instanceType string, existingAnnotations map[string]string, statusAuthoritativeAPI machinev1beta1.MachineAuthority) (*machinev1beta1.MachineSet, error) {
-	return newTestMachineSetWithCredentials(namespace, instanceType, existingAnnotations, statusAuthoritativeAPI, true)
-}
-
-func newTestMachineSetWithCredentials(namespace string, instanceType string, existingAnnotations map[string]string, statusAuthoritativeAPI machinev1beta1.MachineAuthority, withCredentialsSecret bool) (*machinev1beta1.MachineSet, error) {
-	// Copy anntotations map so we don't modify the input
+// newTestMachineDeployment creates a test CAPI MachineDeployment with supporting infrastructure
+func newTestMachineDeployment(namespace, instanceType string, existingAnnotations map[string]string) (*clusterv1.MachineDeployment, *infrav1.AWSMachineTemplate, *clusterv1.Cluster, *infrav1.AWSCluster, error) {
 	annotations := make(map[string]string)
 	for k, v := range existingAnnotations {
 		annotations[k] = v
 	}
 
-	machineProviderSpec := &machinev1beta1.AWSMachineProviderConfig{
-		InstanceType: instanceType,
-		Placement: machinev1beta1.Placement{
+	// Create AWSMachineTemplate
+	awsMachineTemplate := &infrav1.AWSMachineTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-aws-template",
+			Namespace: namespace,
+		},
+		Spec: infrav1.AWSMachineTemplateSpec{
+			Template: infrav1.AWSMachineTemplateResource{
+				Spec: infrav1.AWSMachineSpec{
+					InstanceType: instanceType,
+				},
+			},
+		},
+	}
+
+	// Create AWSCluster
+	awsCluster := &infrav1.AWSCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster-aws",
+			Namespace: namespace,
+		},
+		Spec: infrav1.AWSClusterSpec{
 			Region: "us-east-1",
 		},
 	}
 
-	// Only add CredentialsSecret if requested (to test IRSA path)
-	if withCredentialsSecret {
-		machineProviderSpec.CredentialsSecret = &corev1.LocalObjectReference{
-			Name: "test-credentials",
-		}
+	// Create Cluster
+	cluster := &clusterv1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: namespace,
+		},
+		Spec: clusterv1.ClusterSpec{
+			InfrastructureRef: &corev1.ObjectReference{
+				APIVersion: "infrastructure.cluster.x-k8s.io/v1beta2",
+				Kind:       "AWSCluster",
+				Name:       awsCluster.Name,
+				Namespace:  awsCluster.Namespace,
+			},
+		},
 	}
 
-	providerSpec, err := providerSpecFromMachine(machineProviderSpec)
-	if err != nil {
-		return nil, err
-	}
-
+	// Create MachineDeployment
 	replicas := int32(1)
-	return &machinev1beta1.MachineSet{
+	machineDeployment := &clusterv1.MachineDeployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations:  annotations,
-			GenerateName: "test-machineset-",
+			GenerateName: "test-md-",
 			Namespace:    namespace,
 		},
-		Spec: machinev1beta1.MachineSetSpec{
-			Replicas: &replicas,
-			Template: machinev1beta1.MachineTemplateSpec{
-				Spec: machinev1beta1.MachineSpec{
-					ProviderSpec: providerSpec,
+		Spec: clusterv1.MachineDeploymentSpec{
+			ClusterName: cluster.Name,
+			Replicas:    &replicas,
+			Template: clusterv1.MachineTemplateSpec{
+				Spec: clusterv1.MachineSpec{
+					ClusterName: cluster.Name,
+					InfrastructureRef: corev1.ObjectReference{
+						APIVersion: "infrastructure.cluster.x-k8s.io/v1beta2",
+						Kind:       "AWSMachineTemplate",
+						Name:       awsMachineTemplate.Name,
+						Namespace:  awsMachineTemplate.Namespace,
+					},
 				},
 			},
 		},
-		Status: machinev1beta1.MachineSetStatus{
-			AuthoritativeAPI: statusAuthoritativeAPI,
-		},
-	}, nil
-}
-
-func providerSpecFromMachine(in *machinev1beta1.AWSMachineProviderConfig) (machinev1beta1.ProviderSpec, error) {
-	bytes, err := json.Marshal(in)
-	if err != nil {
-		return machinev1beta1.ProviderSpec{}, err
-	}
-	return machinev1beta1.ProviderSpec{
-		Value: &runtime.RawExtension{Raw: bytes},
-	}, nil
-}
-
-func newDefaultMutableFeatureGate() (featuregate.MutableFeatureGate, error) {
-	defaultMutableGate := feature.DefaultMutableFeatureGate
-	if _, err := features.NewFeatureGateOptions(defaultMutableGate, openshiftfeatures.SelfManaged,
-		openshiftfeatures.FeatureGateMachineAPIMigration); err != nil {
-		return nil, fmt.Errorf("failed to set up default feature gate: %w", err)
-	}
-	if err := defaultMutableGate.SetFromMap(
-		map[string]bool{
-			"MachineAPIMigration": true,
-		},
-	); err != nil {
-		return nil, fmt.Errorf("failed to set features from map: %w", err)
 	}
 
-	return defaultMutableGate, nil
+	return machineDeployment, awsMachineTemplate, cluster, awsCluster, nil
 }

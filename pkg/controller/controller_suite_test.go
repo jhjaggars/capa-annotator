@@ -21,9 +21,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
@@ -50,9 +51,12 @@ func TestReconciler(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd")},
+		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
 	}
-	Expect(machinev1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
+
+	// Register CAPI and CAPA schemes
+	Expect(clusterv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(infrav1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	var err error
 	cfg, err = testEnv.Start()

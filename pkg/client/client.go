@@ -17,16 +17,12 @@ limitations under the License.
 package client
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/jhjaggars/capa-annotator/pkg/version"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -41,34 +37,17 @@ import (
 	"github.com/aws/aws-sdk-go/service/elb/elbiface"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/elbv2/elbv2iface"
-	configv1 "github.com/openshift/api/config/v1"
-	machineapiapierrors "github.com/openshift/machine-api-operator/pkg/controller/machine"
-	apimachineryerrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 //go:generate go run ../../vendor/github.com/golang/mock/mockgen -source=./client.go -destination=./mock/client_generated.go -package=mock
 
 const (
-	// AwsCredsSecretIDKey is secret key containing AWS KeyId
-	AwsCredsSecretIDKey = "aws_access_key_id"
-	// AwsCredsSecretAccessKey is secret key containing AWS Secret Key
-	AwsCredsSecretAccessKey = "aws_secret_access_key"
-
-	// GlobalInfrastuctureName default name for infrastructure object
-	GlobalInfrastuctureName = "cluster"
-
-	// KubeCloudConfigNamespace is the namespace where the kube cloud config ConfigMap is located
-	KubeCloudConfigNamespace = "openshift-config-managed"
-	// kubeCloudConfigName is the name of the kube cloud config ConfigMap
-	kubeCloudConfigName = "kube-cloud-config"
-	// cloudCABundleKey is the key in the kube cloud config ConfigMap where the custom CA bundle is located
-	cloudCABundleKey = "ca-bundle.pem"
 	// awsRegionsCacheExpirationDuration is the duration for which the AWS regions cache is valid
 	awsRegionsCacheExpirationDuration = time.Minute * 30
 )
 
 // AwsClientBuilderFuncType is function type for building aws client
-type AwsClientBuilderFuncType func(client client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache RegionCache) (Client, error)
+type AwsClientBuilderFuncType func(client client.Client, secretName, namespace, region string, regionCache RegionCache) (Client, error)
 
 // Client is a wrapper object for actual AWS SDK clients to allow for easier testing.
 type Client interface {
@@ -187,11 +166,11 @@ func (c *awsClient) ELBv2DeregisterTargets(input *elbv2.DeregisterTargetsInput) 
 }
 
 // NewClient creates our client wrapper object for the actual AWS clients we use.
-// For authentication the underlying clients will use either the cluster AWS credentials
-// secret if defined (i.e. in the root cluster),
-// otherwise the IAM profile of the master where the actuator will run. (target clusters)
-func NewClient(ctrlRuntimeClient client.Client, secretName, namespace, region string, configManagedClient client.Client) (Client, error) {
-	s, err := newAWSSession(ctrlRuntimeClient, secretName, namespace, region, configManagedClient)
+// For authentication the underlying clients will use IRSA (IAM Roles for Service Accounts)
+// or fall back to the default AWS credential chain.
+// Note: secretName and namespace parameters are deprecated and unused (kept for API compatibility).
+func NewClient(ctrlRuntimeClient client.Client, secretName, namespace, region string) (Client, error) {
+	s, err := newAWSSession(region)
 	if err != nil {
 		return nil, err
 	}
@@ -313,8 +292,9 @@ func validateRegion(describeRegionsOutput *ec2.DescribeRegionsOutput, region str
 // NewValidatedClient creates our client wrapper object for the actual AWS clients we use.
 // This should behave the same as NewClient except it will validate the client configuration
 // (eg the region) before returning the client.
-func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, region string, configManagedClient client.Client, regionCache RegionCache) (Client, error) {
-	s, err := newAWSSession(ctrlRuntimeClient, secretName, namespace, region, configManagedClient)
+// Note: ctrlRuntimeClient, secretName and namespace parameters are deprecated and unused (kept for API compatibility).
+func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, region string, regionCache RegionCache) (Client, error) {
+	s, err := newAWSSession(region)
 	if err != nil {
 		return nil, err
 	}
@@ -353,76 +333,35 @@ func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, 
 	}, nil
 }
 
-func newAWSSession(ctrlRuntimeClient client.Client, secretName, namespace, region string, configManagedClient client.Client) (*session.Session, error) {
+func newAWSSession(region string) (*session.Session, error) {
 	sessionOptions := session.Options{
 		Config: aws.Config{
 			Region: aws.String(region),
 		},
 	}
 
-	// Check for IRSA environment variables (highest priority)
+	// Check for IRSA environment variables
 	roleARN := os.Getenv("AWS_ROLE_ARN")
 	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 
-	// Validate IRSA configuration - both variables must be present or both must be absent
-	if roleARN != "" || tokenFile != "" {
-		// Fail fast if only one IRSA variable is set
-		if roleARN == "" {
-			return nil, machineapiapierrors.InvalidMachineConfiguration(
-				"AWS_WEB_IDENTITY_TOKEN_FILE is set but AWS_ROLE_ARN is missing")
-		}
-		if tokenFile == "" {
-			return nil, machineapiapierrors.InvalidMachineConfiguration(
-				"AWS_ROLE_ARN is set but AWS_WEB_IDENTITY_TOKEN_FILE is missing")
-		}
-
-		// Both IRSA variables are present - use IRSA authentication
+	// Prefer IRSA if configured, otherwise fall back to default credential chain
+	// This allows local testing with ~/.aws/credentials or environment variables
+	if roleARN != "" && tokenFile != "" {
 		klog.Infof("Using IRSA authentication with role: %s", roleARN)
 		// AWS SDK v1 will automatically detect and use web identity credentials
 		// from the environment variables - no explicit configuration needed
-	} else if secretName != "" {
-		// IRSA not configured - fall back to secret-based authentication
-		klog.Info("Using secret-based authentication")
-
-		var secret corev1.Secret
-		if err := ctrlRuntimeClient.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: secretName}, &secret); err != nil {
-			if apimachineryerrors.IsNotFound(err) {
-				return nil, machineapiapierrors.InvalidMachineConfiguration("aws credentials secret %s/%s: %v not found", namespace, secretName, err)
-			}
-			return nil, err
-		}
-		sharedCredsFile, err := sharedCredentialsFileFromSecret(&secret)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create shared credentials file from Secret: %v", err)
-		}
-		sessionOptions.SharedConfigState = session.SharedConfigEnable
-		sessionOptions.SharedConfigFiles = []string{sharedCredsFile}
 	} else {
-		// Neither IRSA nor secret-based credentials are configured
-		return nil, machineapiapierrors.InvalidMachineConfiguration(
-			"no AWS credentials configured: neither IRSA environment variables nor credentialsSecret specified")
-	}
-
-	// Resolve custom endpoints (works for both IRSA and secret-based auth)
-	if err := resolveEndpoints(&sessionOptions.Config, ctrlRuntimeClient, region); err != nil {
-		return nil, err
-	}
-
-	// Set custom CA bundle if configured (works for both IRSA and secret-based auth)
-	if err := useCustomCABundle(&sessionOptions, configManagedClient); err != nil {
-		return nil, fmt.Errorf("failed to set the custom CA bundle: %w", err)
+		klog.Info("IRSA not configured, using default AWS credential chain (environment variables, ~/.aws/credentials, EC2 metadata, etc.)")
+		// AWS SDK will use the default credential chain:
+		// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+		// 2. Shared credentials file (~/.aws/credentials)
+		// 3. EC2 instance metadata
 	}
 
 	// Create AWS session with the configured options
 	s, err := session.NewSessionWithOptions(sessionOptions)
 	if err != nil {
 		return nil, err
-	}
-
-	// Remove any temporary shared credentials files after session creation
-	// (only applicable for secret-based authentication, IRSA doesn't create temp files)
-	if len(sessionOptions.SharedConfigFiles) > 0 {
-		os.Remove(sessionOptions.SharedConfigFiles[0])
 	}
 
 	s.Handlers.Build.PushBackNamed(addProviderVersionToUserAgent)
@@ -433,112 +372,6 @@ func newAWSSession(ctrlRuntimeClient client.Client, secretName, namespace, regio
 // addProviderVersionToUserAgent is a named handler that will add cluster-api-provider-aws
 // version information to requests made by the AWS SDK.
 var addProviderVersionToUserAgent = request.NamedHandler{
-	Name: "openshift.io/cluster-api-provider-aws",
+	Name: "capa-annotator",
 	Fn:   request.MakeAddToUserAgentHandler("github.com/jhjaggars capa-annotator", version.Version),
-}
-
-func resolveEndpoints(awsConfig *aws.Config, ctrlRuntimeClient client.Client, region string) error {
-	infra := &configv1.Infrastructure{}
-	infraName := client.ObjectKey{Name: GlobalInfrastuctureName}
-
-	if err := ctrlRuntimeClient.Get(context.Background(), infraName, infra); err != nil {
-		return err
-	}
-
-	// Do nothing when custom endpoints are missing
-	if infra.Status.PlatformStatus == nil || infra.Status.PlatformStatus.AWS == nil {
-		return nil
-	}
-
-	customEndpointsMap := buildCustomEndpointsMap(infra.Status.PlatformStatus.AWS.ServiceEndpoints)
-
-	if len(customEndpointsMap) == 0 {
-		return nil
-	}
-
-	customResolver := func(service, region string, optFns ...func(*endpoints.Options)) (endpoints.ResolvedEndpoint, error) {
-		if url, ok := customEndpointsMap[service]; ok {
-			return endpoints.ResolvedEndpoint{
-				URL:           url,
-				SigningRegion: region,
-			}, nil
-
-		}
-		return endpoints.DefaultResolver().EndpointFor(service, region, optFns...)
-	}
-
-	awsConfig.EndpointResolver = endpoints.ResolverFunc(customResolver)
-
-	return nil
-}
-
-// buildCustomEndpointsMap constructs a map that links endpoint name and it's url
-func buildCustomEndpointsMap(customEndpoints []configv1.AWSServiceEndpoint) map[string]string {
-	customEndpointsMap := make(map[string]string)
-
-	for _, customEndpoint := range customEndpoints {
-		customEndpointsMap[customEndpoint.Name] = customEndpoint.URL
-	}
-
-	return customEndpointsMap
-}
-
-// sharedCredentialsFileFromSecret returns a location (path) to the shared credentials
-// file that was created using the provided secret
-func sharedCredentialsFileFromSecret(secret *corev1.Secret) (string, error) {
-	var data []byte
-	switch {
-	case len(secret.Data["credentials"]) > 0:
-		data = secret.Data["credentials"]
-	case len(secret.Data["aws_access_key_id"]) > 0 && len(secret.Data["aws_secret_access_key"]) > 0:
-		data = newConfigForStaticCreds(
-			string(secret.Data["aws_access_key_id"]),
-			string(secret.Data["aws_secret_access_key"]),
-		)
-	default:
-		return "", fmt.Errorf("invalid secret for aws credentials")
-	}
-
-	f, err := os.CreateTemp("", "aws-shared-credentials")
-	if err != nil {
-		return "", fmt.Errorf("failed to create file for shared credentials: %v", err)
-	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return "", fmt.Errorf("failed to write credentials to %s: %v", f.Name(), err)
-	}
-	return f.Name(), nil
-}
-
-func newConfigForStaticCreds(accessKey string, accessSecret string) []byte {
-	buf := &bytes.Buffer{}
-	fmt.Fprint(buf, "[default]\n")
-	fmt.Fprintf(buf, "aws_access_key_id = %s\n", accessKey)
-	fmt.Fprintf(buf, "aws_secret_access_key = %s\n", accessSecret)
-	return buf.Bytes()
-}
-
-// useCustomCABundle will set up a custom CA bundle in the AWS options if a CA bundle is configured in the
-// kube cloud config.
-func useCustomCABundle(awsOptions *session.Options, configManagedClient client.Client) error {
-	cm := &corev1.ConfigMap{}
-	switch err := configManagedClient.Get(
-		context.Background(),
-		client.ObjectKey{Namespace: KubeCloudConfigNamespace, Name: kubeCloudConfigName},
-		cm,
-	); {
-	case apimachineryerrors.IsNotFound(err):
-		// no cloud config ConfigMap, so no custom CA bundle
-		return nil
-	case err != nil:
-		return fmt.Errorf("failed to get kube-cloud-config ConfigMap: %w", err)
-	}
-	caBundle, ok := cm.Data[cloudCABundleKey]
-	if !ok {
-		// no "ca-bundle.pem" key in the ConfigMap, so no custom CA bundle
-		return nil
-	}
-	klog.Info("using a custom CA bundle")
-	awsOptions.CustomCABundle = strings.NewReader(caBundle)
-	return nil
 }

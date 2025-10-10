@@ -17,27 +17,19 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
-	configv1 "github.com/openshift/api/config/v1"
-	apifeatures "github.com/openshift/api/features"
-	machinev1 "github.com/openshift/api/machine/v1"
-	machinev1beta1 "github.com/openshift/api/machine/v1beta1"
-	"github.com/openshift/library-go/pkg/features"
-	"github.com/openshift/machine-api-operator/pkg/metrics"
 	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
 	machinesetcontroller "github.com/jhjaggars/capa-annotator/pkg/controller"
 	"github.com/jhjaggars/capa-annotator/pkg/version"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apiserver/pkg/util/feature"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	"k8s.io/component-base/featuregate"
 	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/textlogger"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
-	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -61,7 +53,7 @@ func main() {
 
 	metricsAddress := flag.String(
 		"metrics-bind-address",
-		metrics.DefaultMachineMetricsAddress,
+		":8080",
 		"Address for hosting metrics",
 	)
 
@@ -94,16 +86,6 @@ func main() {
 		":9440",
 		"The address for health checking.",
 	)
-
-	// Sets up feature gates
-	defaultMutableGate := feature.DefaultMutableFeatureGate
-	gateOpts, err := features.NewFeatureGateOptions(defaultMutableGate, apifeatures.SelfManaged, apifeatures.FeatureGateMachineAPIMigration)
-	if err != nil {
-		klog.Fatalf("Error setting up feature gates: %v", err)
-	}
-
-	// Add the --feature-gates flag
-	gateOpts.AddFlagsToGoFlagSet(nil)
 
 	klog.InitFlags(nil)
 	if err := flag.Set("logtostderr", "true"); err != nil {
@@ -145,20 +127,8 @@ func main() {
 		opts.Cache.DefaultNamespaces = map[string]cache.Config{
 			*watchNamespace: {},
 		}
-		klog.Infof("Watching machine-api objects only in namespace %q for reconciliation.", *watchNamespace)
+		klog.Infof("Watching CAPI objects only in namespace %q for reconciliation.", *watchNamespace)
 	}
-
-	// Sets feature gates from flags
-	klog.Infof("Initializing feature gates: %s", strings.Join(defaultMutableGate.KnownFeatures(), ", "))
-	warnings, err := gateOpts.ApplyTo(defaultMutableGate)
-	if err != nil {
-		klog.Fatalf("Error setting feature gates from flags: %v", err)
-	}
-	if len(warnings) > 0 {
-		klog.Infof("Warnings setting feature gates from flags: %v", warnings)
-	}
-
-	klog.Infof("FeatureGateMachineAPIMigration initialised: %t", defaultMutableGate.Enabled(featuregate.Feature(apifeatures.FeatureGateMachineAPIMigration)))
 
 	mgr, err := manager.New(cfg, opts)
 	if err != nil {
@@ -166,28 +136,16 @@ func main() {
 	}
 
 	// Setup Scheme for all resources
-	if err := machinev1beta1.AddToScheme(mgr.GetScheme()); err != nil {
-		klog.Fatalf("Error setting up scheme: %v", err)
+	if err := clusterv1.AddToScheme(mgr.GetScheme()); err != nil {
+		klog.Fatalf("Error setting up CAPI scheme: %v", err)
 	}
 
-	if err := machinev1.Install(mgr.GetScheme()); err != nil {
-		klog.Fatalf("Error setting up scheme: %v", err)
-	}
-
-	if err := configv1.AddToScheme(mgr.GetScheme()); err != nil {
-		klog.Fatal(err)
+	if err := infrav1.AddToScheme(mgr.GetScheme()); err != nil {
+		klog.Fatalf("Error setting up CAPA scheme: %v", err)
 	}
 
 	if err := corev1.AddToScheme(mgr.GetScheme()); err != nil {
 		klog.Fatal(err)
-	}
-
-	configManagedClient, startCache, err := newConfigManagedClient(mgr)
-	if err != nil {
-		klog.Fatal(err)
-	}
-	if err := mgr.Add(startCache); err != nil {
-		klog.Fatalf("Error adding start cache to manager: %v", err)
 	}
 
 	describeRegionsCache := awsclient.NewRegionCache()
@@ -196,15 +154,13 @@ func main() {
 	setupLog := ctrl.Log.WithName("setup")
 
 	if err := (&machinesetcontroller.Reconciler{
-		Client:              mgr.GetClient(),
-		Log:                 ctrl.Log.WithName("controllers").WithName("MachineSet"),
-		AwsClientBuilder:    awsclient.NewValidatedClient,
-		RegionCache:         describeRegionsCache,
-		ConfigManagedClient: configManagedClient,
-		InstanceTypesCache:  machinesetcontroller.NewInstanceTypesCache(),
-		Gate:                defaultMutableGate,
+		Client:             mgr.GetClient(),
+		Log:                ctrl.Log.WithName("controllers").WithName("MachineDeployment"),
+		AwsClientBuilder:   awsclient.NewValidatedClient,
+		RegionCache:        describeRegionsCache,
+		InstanceTypesCache: machinesetcontroller.NewInstanceTypesCache(),
 	}).SetupWithManager(mgr, controller.Options{}); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "MachineSet")
+		setupLog.Error(err, "unable to create controller", "controller", "MachineDeployment")
 		os.Exit(1)
 	}
 
@@ -221,35 +177,4 @@ func main() {
 	if err != nil {
 		klog.Fatalf("Error starting manager: %v", err)
 	}
-}
-
-// newConfigManagedClient returns a controller-runtime client that can be used to access the openshift-config-managed
-// namespace.
-func newConfigManagedClient(mgr manager.Manager) (runtimeclient.Client, manager.Runnable, error) {
-	cacheOpts := cache.Options{
-		Scheme: mgr.GetScheme(),
-		Mapper: mgr.GetRESTMapper(),
-		DefaultNamespaces: map[string]cache.Config{
-			awsclient.KubeCloudConfigNamespace: {},
-		},
-	}
-	cache, err := cache.New(mgr.GetConfig(), cacheOpts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	clientOpts := runtimeclient.Options{
-		Scheme: mgr.GetScheme(),
-		Mapper: mgr.GetRESTMapper(),
-		Cache: &runtimeclient.CacheOptions{
-			Reader: cache,
-		},
-	}
-
-	cachedClient, err := runtimeclient.New(config.GetConfigOrDie(), clientOpts)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return cachedClient, cache, nil
 }
