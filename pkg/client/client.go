@@ -341,14 +341,19 @@ func newAWSSession(ctrlRuntimeClient client.Client, secretName, namespace, regio
 	roleARN := os.Getenv("AWS_ROLE_ARN")
 	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 
-	// IRSA is required for this controller
-	if roleARN == "" || tokenFile == "" {
-		return nil, fmt.Errorf("IRSA not configured: AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE environment variables required")
+	// Prefer IRSA if configured, otherwise fall back to default credential chain
+	// This allows local testing with ~/.aws/credentials or environment variables
+	if roleARN != "" && tokenFile != "" {
+		klog.Infof("Using IRSA authentication with role: %s", roleARN)
+		// AWS SDK v1 will automatically detect and use web identity credentials
+		// from the environment variables - no explicit configuration needed
+	} else {
+		klog.Info("IRSA not configured, using default AWS credential chain (environment variables, ~/.aws/credentials, EC2 metadata, etc.)")
+		// AWS SDK will use the default credential chain:
+		// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+		// 2. Shared credentials file (~/.aws/credentials)
+		// 3. EC2 instance metadata
 	}
-
-	klog.Infof("Using IRSA authentication with role: %s", roleARN)
-	// AWS SDK v1 will automatically detect and use web identity credentials
-	// from the environment variables - no explicit configuration needed
 
 	// Create AWS session with the configured options
 	s, err := session.NewSessionWithOptions(sessionOptions)

@@ -23,11 +23,10 @@ func TestNewAWSSessionIRSA(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:          "IRSA missing - no environment variables",
-			roleARN:       "",
-			tokenFile:     "",
-			expectError:   true,
-			errorContains: "IRSA not configured",
+			name:        "IRSA missing - falls back to default credential chain",
+			roleARN:     "",
+			tokenFile:   "",
+			expectError: false,
 		},
 	}
 

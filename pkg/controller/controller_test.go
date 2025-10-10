@@ -434,11 +434,16 @@ func TestReconcileWithIRSA(t *testing.T) {
 			},
 		},
 		{
-			name:           "without IRSA configured",
+			name:           "without IRSA configured - falls back to default credential chain",
 			instanceType:   "a1.2xlarge",
 			setIRSAEnvVars: false,
-			expectErr:      true,
-			errorContains:  "IRSA not configured",
+			expectErr:      false,
+			expectedAnnotations: map[string]string{
+				cpuKey:    "8",
+				memoryKey: "16384",
+				gpuKey:    "0",
+				labelsKey: "kubernetes.io/arch=amd64",
+			},
 		},
 	}
 
@@ -475,13 +480,8 @@ func TestReconcileWithIRSA(t *testing.T) {
 			fakeAWSClient, err := fakeawsclient.NewClient(nil, "", "", "")
 			g.Expect(err).ToNot(HaveOccurred())
 			awsClientBuilder := func(client client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
-			// Check IRSA configuration like the real client does
-			roleARN := os.Getenv("AWS_ROLE_ARN")
-			tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
-			if roleARN == "" || tokenFile == "" {
-				return nil, fmt.Errorf("IRSA not configured: AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE environment variables required")
-			}
-			return fakeAWSClient, nil
+				// Mock supports both IRSA and fallback to default credential chain
+				return fakeAWSClient, nil
 			}
 
 		r := Reconciler{
