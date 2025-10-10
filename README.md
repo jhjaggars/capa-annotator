@@ -1,19 +1,19 @@
 # CAPA Annotator
 
-A standalone Kubernetes controller that assigns CPU, memory, GPU, and architecture annotations to MachineSet objects by querying AWS EC2 instance type information.
+A standalone Kubernetes controller that assigns CPU, memory, GPU, and architecture annotations to MachineDeployment objects by querying AWS EC2 instance type information.
 
 ## Overview
 
-This controller replicates the annotation functionality from `openshift/machine-api-provider-aws` but as a completely independent project. It enables cluster-autoscaler to scale from zero by providing instance capacity information via annotations.
+This controller provides annotation functionality for Cluster API (CAPI) MachineDeployments on AWS. It enables cluster-autoscaler to scale from zero by providing instance capacity information via annotations.
 
 ## How It Works
 
-The controller watches MachineSet resources in your cluster and:
+The controller watches MachineDeployment resources in your cluster and:
 
-1. Extracts the instance type from the MachineSet's AWS provider spec
+1. Extracts the instance type from the MachineDeployment's AWSMachineTemplate
 2. Queries the AWS EC2 API for instance type details (CPU, memory, GPU, architecture)
 3. Caches the instance type information for 24 hours
-4. Sets the following annotations on the MachineSet:
+4. Sets the following annotations on the MachineDeployment:
    - `machine.openshift.io/vCPU` - Number of vCPUs for the instance type
    - `machine.openshift.io/memoryMb` - Memory in MB for the instance type
    - `machine.openshift.io/GPU` - Number of GPUs for the instance type
@@ -23,8 +23,8 @@ The controller watches MachineSet resources in your cluster and:
 
 ### Prerequisites
 
-- Kubernetes cluster with OpenShift Machine API installed
-- AWS credentials configured (via secrets referenced in MachineSet specs)
+- Kubernetes cluster with Cluster API (CAPI) and Cluster API Provider AWS (CAPA) installed
+- AWS credentials configured (via IRSA, environment variables, or ~/.aws/credentials)
 - Network access to AWS EC2 API endpoints
 
 ### Building
@@ -107,7 +107,7 @@ The controller supports two authentication methods:
 IRSA provides a more secure authentication method using projected service account tokens instead of static credentials.
 
 **Prerequisites:**
-- OpenShift cluster on AWS with OIDC provider configured
+- Kubernetes cluster on AWS with OIDC provider configured (e.g., EKS, CAPI-managed cluster)
 - IAM role with appropriate EC2 permissions
 - IAM role trust policy configured for the cluster's OIDC provider
 
@@ -198,70 +198,58 @@ spec:
               path: token
 ```
 
-**MachineSet Configuration:**
-
-When using IRSA, the `credentialsSecret` field in the MachineSet is optional:
+**Example CAPI MachineDeployment:**
 
 ```yaml
-apiVersion: machine.openshift.io/v1beta1
-kind: MachineSet
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
 metadata:
-  name: my-machineset
-  namespace: openshift-machine-api
+  name: my-workers
+  namespace: default
+spec:
+  clusterName: my-cluster
+  replicas: 3
+  template:
+    spec:
+      clusterName: my-cluster
+      bootstrap:
+        configRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          kind: KubeadmConfigTemplate
+          name: my-workers
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+        kind: AWSMachineTemplate
+        name: my-workers
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+metadata:
+  name: my-workers
+  namespace: default
 spec:
   template:
     spec:
-      providerSpec:
-        value:
-          instanceType: m5.large
-          # credentialsSecret can be omitted when IRSA is configured
-          placement:
-            region: us-east-1
+      instanceType: m5.large
+      # AWS credentials come from IRSA or default credential chain
 ```
 
-#### 2. Secret-based Authentication - Legacy/Fallback
+#### 2. Default Credential Chain - Fallback
 
-AWS credentials can be provided via Kubernetes secrets referenced in MachineSet specs.
+When IRSA is not configured, the controller falls back to the default AWS credential chain:
 
-**MachineSet Configuration:**
-```yaml
-apiVersion: machine.openshift.io/v1beta1
-kind: MachineSet
-metadata:
-  name: my-machineset
-  namespace: openshift-machine-api
-spec:
-  template:
-    spec:
-      providerSpec:
-        value:
-          credentialsSecret:
-            name: aws-cloud-credentials
-          instanceType: m5.large
-          placement:
-            region: us-east-1
-```
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+2. Shared credentials file (`~/.aws/credentials`)
+3. EC2 instance metadata (for controllers running on EC2)
 
-**AWS Credentials Secret:**
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-cloud-credentials
-  namespace: openshift-machine-api
-type: Opaque
-data:
-  aws_access_key_id: <base64-encoded-access-key>
-  aws_secret_access_key: <base64-encoded-secret-key>
-```
+This fallback makes local development and testing easier.
 
 ### Authentication Priority
 
 The controller automatically selects the authentication method in the following priority:
 
-1. **IRSA** (highest priority) - If both `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables are set
-2. **Secret-based** (fallback) - If `credentialsSecret` is specified in the MachineSet
-3. **Error** - If neither method is configured
+1. **IRSA** (recommended) - If both `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables are set
+2. **Default credential chain** (fallback) - Uses AWS SDK default credential chain
 
 **Benefits of IRSA:**
 - ✅ No static credentials stored in Kubernetes secrets
@@ -383,16 +371,15 @@ make test
 - ✅ Invalid instance types with graceful error handling
 - ✅ Preservation of existing user annotations
 - ✅ IRSA authentication with both environment variables
-- ✅ IRSA partial configuration error handling
-- ✅ IRSA priority over secret-based authentication
-- ✅ Secret-based authentication fallback
-- ✅ Custom AWS endpoint integration with IRSA
+- ✅ Fallback to default AWS credential chain
+- ✅ CAPI MachineDeployment and AWSMachineTemplate resolution
+- ✅ Region resolution from AWSCluster
 
 **Integration Tests Cover:**
 - ✅ Full reconciliation loop with real Kubernetes API
-- ✅ Annotation updates on MachineSet resources
+- ✅ Annotation updates on MachineDeployment resources
 - ✅ Event recording for errors
-- ✅ Feature gate behavior (MachineAPIMigration)
+- ✅ CAPI template resolution
 
 #### CI/CD
 

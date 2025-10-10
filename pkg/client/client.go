@@ -166,9 +166,11 @@ func (c *awsClient) ELBv2DeregisterTargets(input *elbv2.DeregisterTargetsInput) 
 }
 
 // NewClient creates our client wrapper object for the actual AWS clients we use.
-// For authentication the underlying clients will use IRSA (IAM Roles for Service Accounts).
+// For authentication the underlying clients will use IRSA (IAM Roles for Service Accounts)
+// or fall back to the default AWS credential chain.
+// Note: secretName and namespace parameters are deprecated and unused (kept for API compatibility).
 func NewClient(ctrlRuntimeClient client.Client, secretName, namespace, region string) (Client, error) {
-	s, err := newAWSSession(ctrlRuntimeClient, secretName, namespace, region)
+	s, err := newAWSSession(region)
 	if err != nil {
 		return nil, err
 	}
@@ -290,8 +292,9 @@ func validateRegion(describeRegionsOutput *ec2.DescribeRegionsOutput, region str
 // NewValidatedClient creates our client wrapper object for the actual AWS clients we use.
 // This should behave the same as NewClient except it will validate the client configuration
 // (eg the region) before returning the client.
+// Note: ctrlRuntimeClient, secretName and namespace parameters are deprecated and unused (kept for API compatibility).
 func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, region string, regionCache RegionCache) (Client, error) {
-	s, err := newAWSSession(ctrlRuntimeClient, secretName, namespace, region)
+	s, err := newAWSSession(region)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +333,7 @@ func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, 
 	}, nil
 }
 
-func newAWSSession(ctrlRuntimeClient client.Client, secretName, namespace, region string) (*session.Session, error) {
+func newAWSSession(region string) (*session.Session, error) {
 	sessionOptions := session.Options{
 		Config: aws.Config{
 			Region: aws.String(region),

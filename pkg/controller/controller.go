@@ -25,10 +25,11 @@ const (
 	// This exposes compute information based on the providerSpec input.
 	// This is needed by the autoscaler to foresee upcoming capacity when scaling from zero.
 	// https://github.com/openshift/enhancements/pull/186
-	cpuKey    = "machine.openshift.io/vCPU"
-	memoryKey = "machine.openshift.io/memoryMb"
-	gpuKey    = "machine.openshift.io/GPU"
-	labelsKey = "capacity.cluster-autoscaler.kubernetes.io/labels"
+	cpuKey      = "machine.openshift.io/vCPU"
+	memoryKey   = "machine.openshift.io/memoryMb"
+	gpuKey      = "machine.openshift.io/GPU"
+	labelsKey   = "capacity.cluster-autoscaler.kubernetes.io/labels"
+	archLabelKey = "kubernetes.io/arch"
 )
 
 // Reconciler reconciles MachineDeployments.
@@ -162,7 +163,7 @@ func (r *Reconciler) reconcile(machineDeployment *clusterv1.MachineDeployment) (
 	}
 
 	// Update or add architecture label
-	labelsMap["kubernetes.io/arch"] = string(instanceTypeInfo.CPUArchitecture)
+	labelsMap[archLabelKey] = string(instanceTypeInfo.CPUArchitecture)
 
 	// Serialize back to comma-separated format
 	labels := make([]string, 0, len(labelsMap))

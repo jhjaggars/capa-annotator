@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestNewAWSSessionIRSA(t *testing.T) {
@@ -49,11 +48,8 @@ func TestNewAWSSessionIRSA(t *testing.T) {
 				os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 			}
 
-			// Create fake Kubernetes client
-			fakeClient := fake.NewClientBuilder().Build()
-
 			// Call newAWSSession
-			_, err := newAWSSession(fakeClient, "", "default", "us-east-1")
+			_, err := newAWSSession("us-east-1")
 
 			// Verify expectations
 			if tc.expectError {

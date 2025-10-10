@@ -65,6 +65,9 @@ func ResolveAWSMachineTemplate(ctx context.Context, c client.Client, machineDepl
 
 // ExtractInstanceType gets the instance type from AWSMachineTemplate
 func ExtractInstanceType(template *infrav1.AWSMachineTemplate) (string, error) {
+	if template == nil {
+		return "", fmt.Errorf("AWSMachineTemplate is nil")
+	}
 	if template.Spec.Template.Spec.InstanceType == "" {
 		return "", fmt.Errorf("instanceType is empty in AWSMachineTemplate")
 	}
@@ -107,6 +110,9 @@ func getRegionFromAWSCluster(ctx context.Context, c client.Client, machineDeploy
 	// Fetch AWSCluster
 	if cluster.Spec.InfrastructureRef == nil {
 		return "", fmt.Errorf("cluster %s has nil infrastructureRef", cluster.Name)
+	}
+	if cluster.Spec.InfrastructureRef.Name == "" {
+		return "", fmt.Errorf("cluster %s has empty infrastructureRef.Name", cluster.Name)
 	}
 
 	awsCluster := &infrav1.AWSCluster{}
