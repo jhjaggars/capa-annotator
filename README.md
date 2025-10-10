@@ -353,43 +353,6 @@ make test-integration
 make test
 ```
 
-**How it works:**
-- First run downloads kubebuilder assets to `./bin` (~100MB, one-time)
-- Subsequent runs reuse cached binaries
-- Pinned to Kubernetes 1.33.0 for reproducibility
-- No sudo or system-wide installation needed
-- Works on macOS, Linux, and Windows
-
-#### Test Coverage
-
-**Unit Tests Cover:**
-- ✅ Empty instance type handling
-- ✅ Standard instance types (a1.2xlarge, p2.16xlarge)
-- ✅ GPU instances with proper GPU count
-- ✅ ARM64 architecture detection (m6g.4xlarge)
-- ✅ Missing/invalid architecture defaults to amd64
-- ✅ Invalid instance types with graceful error handling
-- ✅ Preservation of existing user annotations
-- ✅ IRSA authentication with both environment variables
-- ✅ Fallback to default AWS credential chain
-- ✅ CAPI MachineDeployment and AWSMachineTemplate resolution
-- ✅ Region resolution from AWSCluster
-
-**Integration Tests Cover:**
-- ✅ Full reconciliation loop with real Kubernetes API
-- ✅ Annotation updates on MachineDeployment resources
-- ✅ Event recording for errors
-- ✅ CAPI template resolution
-
-#### CI/CD
-
-All tests run automatically in GitHub Actions:
-- Unit tests run on every push and PR
-- Integration tests run in a separate job using setup-envtest
-- Coverage reports are uploaded to Codecov
-- No special CI setup required - same Makefile targets work everywhere
-```
-
 ### Testing Locally
 
 You can run the controller locally against a Kubernetes cluster:
