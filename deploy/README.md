@@ -37,7 +37,7 @@ The manifests follow Kubernetes best practices and include:
 
 ### 1. Configure IRSA
 
-Before deploying, you need to configure the IAM role ARN in two places:
+Before deploying, configure the IAM role ARN in the ServiceAccount:
 
 **Edit `serviceaccount.yaml`:**
 ```yaml
@@ -45,14 +45,9 @@ annotations:
   eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
 ```
 
-**Edit `deployment.yaml`:**
-```yaml
-env:
-- name: AWS_ROLE_ARN
-  value: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
-```
-
 Replace `ACCOUNT_ID` and `capa-annotator-role` with your actual AWS account ID and IAM role name.
+
+**Note**: When using IRSA, Kubernetes automatically injects the required AWS environment variables (`AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`) into the pod. You do not need to edit `deployment.yaml` - the ServiceAccount annotation is sufficient.
 
 ### 2. Deploy
 

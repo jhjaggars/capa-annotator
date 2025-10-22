@@ -43,10 +43,10 @@ spec:
         - --health-addr=:9440
         env:
         # IRSA configuration - uncomment and set your IAM role ARN
+        # When the ServiceAccount has the appropriate IRSA annotation, Kubernetes
+        # automatically projects the service account token, and the AWS SDK detects it.
         # - name: AWS_ROLE_ARN
         #   value: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
-        - name: AWS_WEB_IDENTITY_TOKEN_FILE
-          value: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
         # Optionally set AWS region if not using region from AWSCluster
         # - name: AWS_REGION
         #   value: "us-east-1"
@@ -91,24 +91,15 @@ spec:
             - ALL
           readOnlyRootFilesystem: true
         volumeMounts:
-        - name: aws-iam-token
-          mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
-          readOnly: true
         - name: tmp
           mountPath: /tmp
       volumes:
-      # Projected service account token for IRSA
-      - name: aws-iam-token
-        projected:
-          defaultMode: 420
-          sources:
-          - serviceAccountToken:
-              audience: sts.amazonaws.com
-              expirationSeconds: 86400
-              path: token
       # Temporary directory for read-only filesystem
       - name: tmp
         emptyDir: {}
+      # Note: Kubernetes automatically mounts the service account token at
+      # /var/run/secrets/kubernetes.io/serviceaccount/token
+      # The AWS SDK will automatically detect and use it for IRSA when AWS_ROLE_ARN is set
       # Pod anti-affinity for high availability
       affinity:
         podAntiAffinity:
