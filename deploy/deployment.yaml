@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capa-annotator
+  namespace: capa-annotator-system
+  labels:
+    app.kubernetes.io/name: capa-annotator
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/version: "0.1.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capa-annotator
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: capa-annotator
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/version: "0.1.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: capa-annotator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: controller
+        image: quay.io/jhjaggars/capa-annotator:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --leader-elect=true
+        - --leader-elect-resource-namespace=capa-annotator-system
+        - --metrics-bind-address=:8080
+        - --health-addr=:9440
+        env:
+        # IRSA configuration - uncomment and set your IAM role ARN
+        # - name: AWS_ROLE_ARN
+        #   value: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+        # Optionally set AWS region if not using region from AWSCluster
+        # - name: AWS_REGION
+        #   value: "us-east-1"
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 9440
+          name: health
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: aws-iam-token
+          mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      # Projected service account token for IRSA
+      - name: aws-iam-token
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: sts.amazonaws.com
+              expirationSeconds: 86400
+              path: token
+      # Temporary directory for read-only filesystem
+      - name: tmp
+        emptyDir: {}
+      # Pod anti-affinity for high availability
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: capa-annotator
+                  app.kubernetes.io/component: controller
+              topologyKey: kubernetes.io/hostname
+      # Topology spread constraints for better distribution
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: capa-annotator
+            app.kubernetes.io/component: controller
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: capa-annotator
+            app.kubernetes.io/component: controller
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: capa-annotator
+  namespace: capa-annotator-system
+  labels:
+    app.kubernetes.io/name: capa-annotator
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capa-annotator
+      app.kubernetes.io/component: controller
+  endpoints:
+  - port: metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics
+    scheme: http
+    # Optionally add metric relabeling here
+    # metricRelabelings:
+    # - sourceLabels: [__name__]
+    #   regex: 'go_.*'
+    #   action: drop
+  namespaceSelector:
+    matchNames:
+    - capa-annotator-system

@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: capa-annotator
+  namespace: capa-annotator-system
+  labels:
+    app.kubernetes.io/name: capa-annotator
+    app.kubernetes.io/component: controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capa-annotator
+      app.kubernetes.io/component: controller

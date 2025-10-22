@@ -1,0 +1,80 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capa-annotator
+  labels:
+    app.kubernetes.io/name: capa-annotator
+    app.kubernetes.io/component: controller
+rules:
+# MachineDeployment permissions - primary resource to reconcile
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machinedeployments
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+# Cluster permissions - needed to resolve AWS region
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - clusters
+  verbs:
+  - get
+  - list
+  - watch
+# AWSCluster permissions - needed to resolve AWS region
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - awsclusters
+  verbs:
+  - get
+  - list
+  - watch
+# AWSMachineTemplate permissions - needed to extract instance type
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - awsmachinetemplates
+  verbs:
+  - get
+  - list
+  - watch
+# Event permissions - controller creates events for errors and warnings
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+# Lease permissions - required for leader election
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - create
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capa-annotator
+  labels:
+    app.kubernetes.io/name: capa-annotator
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capa-annotator
+subjects:
+- kind: ServiceAccount
+  name: capa-annotator
+  namespace: capa-annotator-system
