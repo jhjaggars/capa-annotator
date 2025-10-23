@@ -29,7 +29,4 @@ WORKDIR /
 # Copy the binary from builder
 COPY --from=builder /workspace/capa-annotator .
 
-# Use non-root user
-USER 65532:65532
-
 ENTRYPOINT ["/capa-annotator"]
