@@ -37,12 +37,34 @@ The controller watches MachineDeployment resources in your cluster and:
 # Build the binary
 make build
 
-# Build the container image
-make image IMAGE_NAME=quay.io/yourusername/capa-annotator IMAGE_TAG=v0.1.0
+# Build the container image (single architecture)
+make image IMAGE_TAG=v0.1.0
 
-# Push the container image
-make push IMAGE_NAME=quay.io/yourusername/capa-annotator IMAGE_TAG=v0.1.0
+# Build multi-architecture container image (amd64 + arm64)
+make image-multiarch IMAGE_TAG=v0.1.0
+
+# Push the container image (single architecture)
+make push IMAGE_TAG=v0.1.0
+
+# Push multi-architecture container image
+make push-multiarch IMAGE_TAG=v0.1.0
 ```
+
+### Using Pre-built Images
+
+Multi-architecture images are available from GitHub Container Registry:
+
+```bash
+# Pull the latest image (automatically selects the correct architecture)
+podman pull ghcr.io/jhjaggars/capa-annotator:latest
+
+# Pull a specific version
+podman pull ghcr.io/jhjaggars/capa-annotator:v0.1.0
+```
+
+Supported architectures:
+- `linux/amd64` (x86_64)
+- `linux/arm64` (ARM64/aarch64)
 
 ### Deploying to Kubernetes
 
@@ -69,7 +91,7 @@ spec:
       serviceAccountName: capa-annotator
       containers:
       - name: controller
-        image: quay.io/jhjaggars/capa-annotator:latest
+        image: ghcr.io/jhjaggars/capa-annotator:latest
         args:
         - --leader-elect=true
         - --metrics-bind-address=:8080
@@ -182,7 +204,7 @@ spec:
       serviceAccountName: capa-annotator
       containers:
       - name: controller
-        image: quay.io/jhjaggars/capa-annotator:latest
+        image: ghcr.io/jhjaggars/capa-annotator:latest
         env:
         - name: AWS_ROLE_ARN
           value: "arn:aws:iam::ACCOUNT_ID:role/capa-annotator-role"
@@ -275,7 +297,7 @@ rules:
 ### Prerequisites
 
 - Go 1.24 or later
-- Docker (for building container images)
+- Podman (for building container images)
 
 ### Building
 

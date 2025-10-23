@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration test-coverage test-race clean fmt vet lint image tidy
+.PHONY: build test test-unit test-integration test-coverage test-race clean fmt vet lint image image-multiarch push push-multiarch tidy
 
 # Binary name
 BINARY_NAME=capa-annotator
@@ -19,10 +19,11 @@ GOFMT=$(GOCMD) fmt
 GOMOD=$(GOCMD) mod
 GOCLEAN=$(GOCMD) clean
 
-# Docker parameters
-IMAGE_REGISTRY?=quay.io
+# Container image parameters
+IMAGE_REGISTRY?=ghcr.io
 IMAGE_NAME?=$(IMAGE_REGISTRY)/jhjaggars/$(BINARY_NAME)
 IMAGE_TAG?=latest
+PLATFORMS?=linux/amd64,linux/arm64
 
 all: build
 
@@ -75,10 +76,18 @@ clean:
 tidy:
 	$(GOMOD) tidy
 
-# Build container image
+# Build container image (single architecture)
 image:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+	podman build -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
-# Push container image
+# Push container image (single architecture)
 push: image
-	docker push $(IMAGE_NAME):$(IMAGE_TAG)
+	podman push $(IMAGE_NAME):$(IMAGE_TAG)
+
+# Build multi-architecture container image
+image-multiarch:
+	podman build --platform=$(PLATFORMS) --manifest $(IMAGE_NAME):$(IMAGE_TAG) .
+
+# Push multi-architecture container image
+push-multiarch: image-multiarch
+	podman manifest push --all $(IMAGE_NAME):$(IMAGE_TAG) docker://$(IMAGE_NAME):$(IMAGE_TAG)
