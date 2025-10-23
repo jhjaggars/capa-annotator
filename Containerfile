@@ -5,7 +5,7 @@ FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 
-WORKDIR /workspace
+WORKDIR /opt/app-root/src
 
 # Copy go.mod and go.sum
 COPY go.mod go.mod
@@ -27,6 +27,6 @@ FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 WORKDIR /
 
 # Copy the binary from builder
-COPY --from=builder /workspace/capa-annotator .
+COPY --from=builder /opt/app-root/src/capa-annotator .
 
 ENTRYPOINT ["/capa-annotator"]
