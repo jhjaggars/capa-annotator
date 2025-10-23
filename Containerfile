@@ -1,6 +1,10 @@
 # Build stage
 FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
 
+# Build arguments for multi-arch support
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
 WORKDIR /workspace
 
 # Copy go.mod and go.sum
@@ -15,7 +19,7 @@ COPY cmd/ cmd/
 COPY pkg/ pkg/
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o capa-annotator ./cmd/controller
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o capa-annotator ./cmd/controller
 
 # Runtime stage
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
