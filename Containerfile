@@ -1,5 +1,5 @@
 # Build stage
-FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.24.6-1760420453 AS builder
 
 # Build arguments for multi-arch support
 ARG TARGETOS=linux
