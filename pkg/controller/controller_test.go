@@ -19,7 +19,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
 	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
 	fakeawsclient "github.com/jhjaggars/capa-annotator/pkg/client/fake"
@@ -564,24 +564,24 @@ func TestReconcileWithIRSA(t *testing.T) {
 
 func TestNormalizeArchitecture(t *testing.T) {
 	testCases := []struct {
-		architecture string
+		architecture types.ArchitectureType
 		expected     normalizedArch
 	}{
 		{
-			architecture: ec2.ArchitectureTypeX8664,
+			architecture: types.ArchitectureTypeX8664,
 			expected:     ArchitectureAmd64,
 		},
 		{
-			architecture: ec2.ArchitectureTypeArm64,
+			architecture: types.ArchitectureTypeArm64,
 			expected:     ArchitectureArm64,
 		},
 		{
-			architecture: "unknown",
+			architecture: types.ArchitectureType("unknown"),
 			expected:     ArchitectureAmd64,
 		},
 	}
 	for _, tc := range testCases {
-		t.Run(tc.architecture, func(tt *testing.T) {
+		t.Run(string(tc.architecture), func(tt *testing.T) {
 			g := NewWithT(tt)
 			g.Expect(normalizeArchitecture(tc.architecture)).To(Equal(tc.expected))
 		})

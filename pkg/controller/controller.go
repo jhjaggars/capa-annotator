@@ -146,9 +146,9 @@ func (r *Reconciler) reconcile(ctx context.Context, machineDeployment *clusterv1
 		machineDeployment.Annotations = make(map[string]string)
 	}
 
-	machineDeployment.Annotations[cpuKey] = strconv.FormatInt(instanceTypeInfo.VCPU, 10)
+	machineDeployment.Annotations[cpuKey] = strconv.FormatInt(int64(instanceTypeInfo.VCPU), 10)
 	machineDeployment.Annotations[memoryKey] = strconv.FormatInt(instanceTypeInfo.MemoryMb, 10)
-	machineDeployment.Annotations[gpuKey] = strconv.FormatInt(instanceTypeInfo.GPU, 10)
+	machineDeployment.Annotations[gpuKey] = strconv.FormatInt(int64(instanceTypeInfo.GPU), 10)
 
 	// Parse existing labels, update architecture, and preserve user-provided labels
 	labelsMap := make(map[string]string)
