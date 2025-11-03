@@ -248,17 +248,16 @@ func (c *regionCache) GetCachedDescribeRegions(ctx context.Context, cfg aws.Conf
 		return regionData.describeRegionsOutput, nil
 	}
 
-	currentRegion := cfg.Region
-	// Use default region to send our request
-	cfg.Region = "us-east-1"
+	// Use a copy of the config to avoid mutating the original
+	// AWS SDK v2 configs should be treated as immutable
+	tempCfg := cfg.Copy()
+	tempCfg.Region = "us-east-1"
 	allRegions := true
 	dryRun := false
-	describeRegionsOutput, err := ec2.NewFromConfig(cfg).DescribeRegions(ctx, &ec2.DescribeRegionsInput{
+	describeRegionsOutput, err := ec2.NewFromConfig(tempCfg).DescribeRegions(ctx, &ec2.DescribeRegionsInput{
 		AllRegions: &allRegions,
 		DryRun:     &dryRun,
 	})
-	// Restore the original region
-	cfg.Region = currentRegion
 	if err != nil {
 		regionData.err = err
 		return nil, err
@@ -300,8 +299,19 @@ func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, 
 		return nil, err
 	}
 
-	// Try to validate region using AWS API
-	// AWS SDK v2 doesn't have the endpoint resolver we had in v1, so we always validate via API
+	// Validate region using AWS API
+	// Note: This is a behavior change from AWS SDK v1 to v2:
+	// - v1: Used local endpoint resolver first, fell back to AWS API if endpoint was unknown
+	// - v2: Always validates via AWS API (DescribeRegions) because v2 removed the endpoint resolver
+	//
+	// Implications:
+	// - Every client creation will make an AWS API call (or use cached result with 30min TTL)
+	// - Cold start: Adds ~200-500ms latency for DescribeRegions API call
+	// - Warm cache: No additional latency
+	// - Potential for transient network issues to affect client creation
+	// - May encounter AWS API throttling if many clients are created rapidly
+	//
+	// This change was necessary for v2 migration and is mitigated by the 30-minute cache
 	klog.Infof("Validating region %s using AWS API", region)
 	describeRegionsOutput, err := regionCache.GetCachedDescribeRegions(context.Background(), cfg)
 	if err != nil {
