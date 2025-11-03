@@ -60,14 +60,6 @@ jobs:
             echo "has_no_automerge=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Add labels to PR
-        if: steps.pr_details.outputs.is_mintmaker == 'true' && steps.pr_details.outputs.state == 'OPEN'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Add dependencies and mintmaker labels if not already present
-          gh pr edit ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --add-label "dependencies,mintmaker" || true
-
       - name: Detect version change type
         id: version_check
         if: steps.pr_details.outputs.is_mintmaker == 'true' && steps.pr_details.outputs.has_no_automerge == 'false' && steps.pr_details.outputs.state == 'OPEN'
