@@ -75,11 +75,17 @@ jobs:
           TITLE="${{ steps.pr_details.outputs.title }}"
           echo "Checking PR title: $TITLE"
 
-          # Look for version patterns in the title
-          # Patterns: "v1.2.3 to v2.0.0", "1.2.3 to 2.0.0", "module X to v1.2.3", etc.
+          # Check if this is a digest/hash update (e.g., "update X digest to abc123")
+          # These are safe to auto-merge as they're typically minor updates
+          if echo "$TITLE" | grep -qiE "(digest|commit|hash) to [a-f0-9]+"; then
+            echo "Digest/hash update detected, eligible for auto-merge"
+            echo "is_major=false" >> $GITHUB_OUTPUT
+            echo "reason=digest_update" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
-          # Extract version numbers using regex
-          # Match patterns like: v1.2.3, 1.2.3, or similar
+          # Look for semantic version patterns in the title
+          # Patterns: "v1.2.3 to v2.0.0", "1.2.3 to 2.0.0", "module X to v1.2.3", etc.
           FROM_VERSION=$(echo "$TITLE" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/^v//')
           TO_VERSION=$(echo "$TITLE" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | tail -1 | sed 's/^v//')
 
@@ -87,7 +93,7 @@ jobs:
           echo "To version: $TO_VERSION"
 
           if [ -z "$FROM_VERSION" ] || [ -z "$TO_VERSION" ]; then
-            echo "Could not parse version information, defaulting to manual review"
+            echo "Could not parse semantic version, defaulting to manual review"
             echo "is_major=true" >> $GITHUB_OUTPUT
             echo "reason=version_parse_failed" >> $GITHUB_OUTPUT
             exit 0
