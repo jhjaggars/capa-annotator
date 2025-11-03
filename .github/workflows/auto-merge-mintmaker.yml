@@ -16,7 +16,7 @@ jobs:
   auto-merge:
     runs-on: ubuntu-latest
     # Only run for MintMaker bot PRs
-    if: github.event.pull_request.user.login == 'red-hat-konflux-kflux-prd-rh03[bot]' || (github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.event.pull_request.user.login == 'app/red-hat-konflux-kflux-prd-rh03' || (github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository)
 
     steps:
       - name: Get PR number
@@ -42,7 +42,7 @@ jobs:
 
           # Check if PR author is MintMaker bot
           AUTHOR=$(echo "$PR_DATA" | jq -r '.author.login')
-          if [ "$AUTHOR" != "red-hat-konflux-kflux-prd-rh03[bot]" ]; then
+          if [ "$AUTHOR" != "app/red-hat-konflux-kflux-prd-rh03" ]; then
             echo "Not a MintMaker PR, skipping"
             echo "is_mintmaker=false" >> $GITHUB_OUTPUT
             exit 0
