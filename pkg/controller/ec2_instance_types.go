@@ -14,12 +14,14 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
 	"k8s.io/klog/v2"
 )
@@ -37,9 +39,9 @@ const (
 // InstanceType holds some of the instance type information that we need to store.
 type InstanceType struct {
 	InstanceType    string
-	VCPU            int64
+	VCPU            int32
 	MemoryMb        int64
-	GPU             int64
+	GPU             int32
 	CPUArchitecture normalizedArch
 }
 
@@ -135,17 +137,18 @@ func fetchEC2InstanceTypes(awsClient awsclient.Client) (map[string]InstanceType,
 
 	// AWS API paginates responses, so we need to loop until we get all the results
 	requestCounter := 0
+	ctx := context.Background()
 	for {
 		requestCounter++
-		rawInstanceTypes, err := awsClient.DescribeInstanceTypes(&input)
+		rawInstanceTypes, err := awsClient.DescribeInstanceTypes(ctx, &input)
 		if err != nil {
 			return nil, fmt.Errorf("describeInstanceTypes request failed: %w", err)
 		}
 		for _, rawInstanceType := range rawInstanceTypes.InstanceTypes {
-			if rawInstanceType.InstanceType == nil || *rawInstanceType.InstanceType == "" {
-				return nil, fmt.Errorf("describeInstanceTypes returned instance type with nil or empty instance name")
+			if rawInstanceType.InstanceType == "" {
+				return nil, fmt.Errorf("describeInstanceTypes returned instance type with empty instance name")
 			}
-			instanceTypes[*rawInstanceType.InstanceType] = transformInstanceType(rawInstanceType)
+			instanceTypes[string(rawInstanceType.InstanceType)] = transformInstanceType(rawInstanceType)
 		}
 
 		// If next token is empty, we have all the results
@@ -163,10 +166,10 @@ func fetchEC2InstanceTypes(awsClient awsclient.Client) (map[string]InstanceType,
 	return instanceTypes, nil
 }
 
-// transformInstanceType takes information we care about from ec2.InstanceTypeInfo and transforms it into InstanceType.
-func transformInstanceType(rawInstanceType *ec2.InstanceTypeInfo) InstanceType {
+// transformInstanceType takes information we care about from types.InstanceTypeInfo and transforms it into InstanceType.
+func transformInstanceType(rawInstanceType types.InstanceTypeInfo) InstanceType {
 	instanceType := InstanceType{
-		InstanceType: *rawInstanceType.InstanceType,
+		InstanceType: string(rawInstanceType.InstanceType),
 	}
 	if rawInstanceType.MemoryInfo != nil && rawInstanceType.MemoryInfo.SizeInMiB != nil {
 		instanceType.MemoryMb = *rawInstanceType.MemoryInfo.SizeInMiB
@@ -177,18 +180,17 @@ func transformInstanceType(rawInstanceType *ec2.InstanceTypeInfo) InstanceType {
 	if rawInstanceType.GpuInfo != nil && len(rawInstanceType.GpuInfo.Gpus) > 0 {
 		instanceType.GPU = getGpuCount(rawInstanceType.GpuInfo)
 	}
-	if rawInstanceType.ProcessorInfo != nil && len(rawInstanceType.ProcessorInfo.SupportedArchitectures) > 0 &&
-		rawInstanceType.ProcessorInfo.SupportedArchitectures[0] != nil && *rawInstanceType.ProcessorInfo.SupportedArchitectures[0] != "" {
-		instanceType.CPUArchitecture = normalizeArchitecture(*rawInstanceType.ProcessorInfo.SupportedArchitectures[0])
+	if rawInstanceType.ProcessorInfo != nil && len(rawInstanceType.ProcessorInfo.SupportedArchitectures) > 0 {
+		instanceType.CPUArchitecture = normalizeArchitecture(rawInstanceType.ProcessorInfo.SupportedArchitectures[0])
 	} else {
-		instanceType.CPUArchitecture = normalizeArchitecture("amd64")
+		instanceType.CPUArchitecture = ArchitectureAmd64
 	}
 	return instanceType
 }
 
 // getGpuCount counts all the GPUs in GpuInfo.
-func getGpuCount(gpuInfo *ec2.GpuInfo) int64 {
-	gpuCountSum := int64(0)
+func getGpuCount(gpuInfo *types.GpuInfo) int32 {
+	gpuCountSum := int32(0)
 	for _, gpu := range gpuInfo.Gpus {
 		if gpu.Count != nil {
 			gpuCountSum += *gpu.Count
@@ -201,15 +203,15 @@ func getGpuCount(gpuInfo *ec2.GpuInfo) int64 {
 // In particular, at the time of writing,
 // the EC2 API uses the GNU name for the x86_64 architecture, and the Golang/LLVM name for the aarch64.
 // The kubernetes.io/arch label expects the Golang/LLVM names.
-// See vendor/github.com/aws/aws-sdk-go/service/ec2/api.go
-func normalizeArchitecture(architecture string) normalizedArch {
+// See vendor/github.com/aws/aws-sdk-go-v2/service/ec2/types/enums.go
+func normalizeArchitecture(architecture types.ArchitectureType) normalizedArch {
 	switch architecture {
-	case ec2.ArchitectureTypeX8664:
+	case types.ArchitectureTypeX8664:
 		return ArchitectureAmd64
-	case ec2.ArchitectureTypeArm64:
+	case types.ArchitectureTypeArm64:
 		return ArchitectureArm64
 	}
-	klog.V(2).Infof("unknown architecture %s. Defaulting to amd64", architecture)
+	klog.V(2).Infof("unknown architecture %s. Defaulting to amd64", string(architecture))
 	// Default to amd64 if we don't recognize the architecture.
 	return ArchitectureAmd64
 }

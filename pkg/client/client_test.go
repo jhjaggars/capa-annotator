@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -48,8 +49,8 @@ func TestNewAWSSessionIRSA(t *testing.T) {
 				os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 			}
 
-			// Call newAWSSession
-			_, err := newAWSSession("us-east-1")
+			// Call newAWSConfig
+			_, err := newAWSConfig(context.Background(), "us-east-1")
 
 			// Verify expectations
 			if tc.expectError {
