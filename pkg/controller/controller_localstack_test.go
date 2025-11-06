@@ -5,6 +5,8 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,6 +23,43 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+// createTestJWT creates a minimal valid JWT token for LocalStack IRSA testing.
+// The token uses the "none" algorithm (no signature) which is acceptable for testing.
+// JWT format: base64url(header).base64url(payload).signature
+func createTestJWT() (string, error) {
+	// Header: {"alg":"none","typ":"JWT"}
+	header := map[string]string{
+		"alg": "none",
+		"typ": "JWT",
+	}
+
+	// Payload with required claims for IRSA
+	// exp set to year 2286 to ensure token doesn't expire during tests
+	payload := map[string]interface{}{
+		"sub": "test-user",
+		"aud": "sts.amazonaws.com",
+		"iat": 1234567890,
+		"exp": 9999999999,
+	}
+
+	// Encode header
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+
+	// Encode payload
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+	// For alg:none, signature is empty
+	return headerB64 + "." + payloadB64 + ".", nil
+}
 
 // TestLocalStackIntegration tests the controller against a running LocalStack instance
 // This test requires LocalStack to be running at http://localhost:4566
@@ -324,10 +363,13 @@ func TestLocalStackIRSA(t *testing.T) {
 	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 	defer os.Unsetenv("AWS_ENDPOINT_URL")
 
-	// Create temporary web identity token file
-	// LocalStack's free version accepts any token content for testing
+	// Create a valid JWT token for IRSA testing
+	jwtToken, err := createTestJWT()
+	g.Expect(err).ToNot(HaveOccurred())
+
+	// Write JWT token to temporary file
 	tokenFile := filepath.Join(os.TempDir(), "test-web-identity-token")
-	err := os.WriteFile(tokenFile, []byte("test-token-content-for-localstack"), 0600)
+	err = os.WriteFile(tokenFile, []byte(jwtToken), 0600)
 	g.Expect(err).ToNot(HaveOccurred())
 	defer os.Remove(tokenFile)
 
@@ -502,9 +544,13 @@ func TestLocalStackIRSAInvalidToken(t *testing.T) {
 	t.Run("Invalid role ARN", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
-		// Create a valid token file
+		// Create a valid JWT token
+		jwtToken, err := createTestJWT()
+		gg.Expect(err).ToNot(HaveOccurred())
+
+		// Write JWT token to file
 		tokenFile := filepath.Join(os.TempDir(), "test-web-identity-token-invalid-role")
-		err := os.WriteFile(tokenFile, []byte("test-token-content"), 0600)
+		err = os.WriteFile(tokenFile, []byte(jwtToken), 0600)
 		gg.Expect(err).ToNot(HaveOccurred())
 		defer os.Remove(tokenFile)
 
@@ -548,9 +594,13 @@ func TestLocalStackIRSAWithRegionCache(t *testing.T) {
 	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 	defer os.Unsetenv("AWS_ENDPOINT_URL")
 
-	// Create temporary web identity token file
+	// Create a valid JWT token for IRSA testing
+	jwtToken, err := createTestJWT()
+	g.Expect(err).ToNot(HaveOccurred())
+
+	// Write JWT token to temporary file
 	tokenFile := filepath.Join(os.TempDir(), "test-web-identity-token-cache")
-	err := os.WriteFile(tokenFile, []byte("test-token-for-region-cache"), 0600)
+	err = os.WriteFile(tokenFile, []byte(jwtToken), 0600)
 	g.Expect(err).ToNot(HaveOccurred())
 	defer os.Remove(tokenFile)
 
