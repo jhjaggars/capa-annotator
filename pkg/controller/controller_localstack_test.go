@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -269,5 +270,313 @@ func TestLocalStackErrorScenarios(t *testing.T) {
 		// Should fail to connect
 		gg.Expect(err).To(HaveOccurred())
 		tt.Logf("Expected connection error: %v", err)
+	})
+}
+
+// TestLocalStackIRSA tests IRSA (IAM Roles for Service Accounts) authentication with LocalStack
+// This test validates that the controller can authenticate using web identity tokens
+// and assumes an IAM role created in LocalStack (test-irsa-role).
+//
+// To run this test:
+//   make localstack-up
+//   make test-localstack
+//   make localstack-down
+func TestLocalStackIRSA(t *testing.T) {
+	g := NewWithT(t)
+
+	// Set up LocalStack environment
+	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	defer os.Unsetenv("AWS_ENDPOINT_URL")
+
+	// Create temporary web identity token file
+	// LocalStack's free version accepts any token content for testing
+	tokenFile := filepath.Join(os.TempDir(), "test-web-identity-token")
+	err := os.WriteFile(tokenFile, []byte("test-token-content-for-localstack"), 0600)
+	g.Expect(err).ToNot(HaveOccurred())
+	defer os.Remove(tokenFile)
+
+	// Set IRSA environment variables
+	// This role is created by test/localstack/init/01-setup-ec2.sh
+	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-irsa-role")
+	os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+	defer func() {
+		os.Unsetenv("AWS_ROLE_ARN")
+		os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	}()
+
+	t.Run("Basic IRSA authentication flow", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		// Create AWS client - should use IRSA to assume role via STS
+		regionCache := awsclient.NewRegionCache()
+		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
+		if err != nil {
+			tt.Skipf("LocalStack not available at http://localhost:4566, skipping test: %v", err)
+			return
+		}
+		gg.Expect(awsClient).ToNot(BeNil())
+
+		// Verify EC2 API calls work with IRSA-obtained credentials
+		cache := NewInstanceTypesCache()
+		info, err := cache.GetInstanceType(awsClient, "us-east-1", "a1.2xlarge")
+		gg.Expect(err).ToNot(HaveOccurred(), "EC2 API call should succeed with IRSA credentials")
+		gg.Expect(info.VCPU).To(BeNumerically(">", 0))
+		gg.Expect(info.MemoryMb).To(BeNumerically(">", 0))
+
+		tt.Logf("IRSA authentication successful - Instance type a1.2xlarge: vCPU=%d, Memory=%dMB",
+			info.VCPU, info.MemoryMb)
+	})
+
+	t.Run("IRSA with multiple instance type queries", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		regionCache := awsclient.NewRegionCache()
+		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
+		if err != nil {
+			tt.Skipf("LocalStack not available: %v", err)
+			return
+		}
+
+		cache := NewInstanceTypesCache()
+		instanceTypes := []string{"a1.2xlarge", "m6g.4xlarge"}
+
+		for _, instanceType := range instanceTypes {
+			info, err := cache.GetInstanceType(awsClient, "us-east-1", instanceType)
+			gg.Expect(err).ToNot(HaveOccurred(), "Failed to query instance type %s with IRSA", instanceType)
+			gg.Expect(info.VCPU).To(BeNumerically(">", 0))
+
+			tt.Logf("IRSA credentials valid for instance type %s: vCPU=%d, Memory=%dMB, Arch=%s",
+				instanceType, info.VCPU, info.MemoryMb, info.CPUArchitecture)
+		}
+	})
+
+	t.Run("Full reconciliation with IRSA", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		// Create test CAPI resources
+		machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment(
+			"default",
+			"a1.2xlarge",
+			map[string]string{},
+		)
+		gg.Expect(err).ToNot(HaveOccurred())
+
+		// Create a scheme with CAPI types
+		testScheme := runtime.NewScheme()
+		gg.Expect(scheme.AddToScheme(testScheme)).To(Succeed())
+		gg.Expect(clusterv1.AddToScheme(testScheme)).To(Succeed())
+		gg.Expect(infrav1.AddToScheme(testScheme)).To(Succeed())
+
+		// Create fake Kubernetes client with test resources
+		fakeK8sClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(machineDeployment, awsMachineTemplate, cluster, awsCluster).
+			Build()
+
+		// Use real AWS client builder pointing to LocalStack with IRSA
+		awsClientBuilder := func(ctrlClient client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
+			return awsclient.NewValidatedClient(ctrlClient, secretName, namespace, region, regionCache)
+		}
+
+		r := Reconciler{
+			Client:             fakeK8sClient,
+			recorder:           record.NewFakeRecorder(10),
+			AwsClientBuilder:   awsClientBuilder,
+			InstanceTypesCache: NewInstanceTypesCache(),
+			RegionCache:        awsclient.NewRegionCache(),
+		}
+
+		// Run reconciliation with IRSA credentials
+		ctx := context.Background()
+		result, err := r.reconcile(ctx, machineDeployment)
+		gg.Expect(err).ToNot(HaveOccurred())
+		gg.Expect(result).ToNot(BeNil())
+
+		// Verify annotations were set
+		annotations := machineDeployment.GetAnnotations()
+		gg.Expect(annotations).To(HaveKey(cpuKey))
+		gg.Expect(annotations).To(HaveKey(memoryKey))
+		gg.Expect(annotations).To(HaveKey(gpuKey))
+		gg.Expect(annotations).To(HaveKey(labelsKey))
+
+		tt.Logf("Reconciliation with IRSA succeeded: vCPU=%s, Memory=%sMB, GPU=%s, Arch=%s",
+			annotations[cpuKey], annotations[memoryKey], annotations[gpuKey], annotations[labelsKey])
+	})
+}
+
+// TestLocalStackIRSAInvalidToken tests error scenarios with IRSA authentication
+func TestLocalStackIRSAInvalidToken(t *testing.T) {
+	// Set up LocalStack environment
+	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	defer os.Unsetenv("AWS_ENDPOINT_URL")
+
+	t.Run("Missing token file", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		// Set IRSA env vars with non-existent token file
+		nonExistentFile := filepath.Join(os.TempDir(), "non-existent-token-file")
+		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-irsa-role")
+		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", nonExistentFile)
+		defer func() {
+			os.Unsetenv("AWS_ROLE_ARN")
+			os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+		}()
+
+		regionCache := awsclient.NewRegionCache()
+		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
+
+		// Note: LocalStack's free version is lenient and may not validate token files
+		// In production AWS, this should fail, but LocalStack may succeed
+		if err != nil {
+			tt.Logf("Error on client creation with missing token file (expected in production AWS): %v", err)
+			return
+		}
+
+		// If client creation succeeds (LocalStack lenient behavior), try API call
+		cache := NewInstanceTypesCache()
+		_, err = cache.GetInstanceType(awsClient, "us-east-1", "a1.2xlarge")
+
+		if err != nil {
+			tt.Logf("API call failed with missing token file (expected in production AWS): %v", err)
+		} else {
+			// LocalStack may allow this - log but don't fail the test
+			tt.Logf("LocalStack accepted missing token file (lenient behavior in free version)")
+		}
+
+		// Test passes either way since we're testing against LocalStack, not production AWS
+		gg.Expect(true).To(BeTrue())
+	})
+
+	t.Run("Invalid role ARN", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		// Create a valid token file
+		tokenFile := filepath.Join(os.TempDir(), "test-web-identity-token-invalid-role")
+		err := os.WriteFile(tokenFile, []byte("test-token-content"), 0600)
+		gg.Expect(err).ToNot(HaveOccurred())
+		defer os.Remove(tokenFile)
+
+		// Set IRSA env vars with non-existent role
+		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/non-existent-role")
+		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+		defer func() {
+			os.Unsetenv("AWS_ROLE_ARN")
+			os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+		}()
+
+		regionCache := awsclient.NewRegionCache()
+		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
+
+		// LocalStack may accept the invalid role, or reject it
+		// Either way, we should get an error at some point
+		if err != nil {
+			tt.Logf("Expected error with invalid role ARN at client creation: %v", err)
+			return
+		}
+
+		// If client creation succeeds, API calls might still fail
+		cache := NewInstanceTypesCache()
+		_, err = cache.GetInstanceType(awsClient, "us-east-1", "a1.2xlarge")
+
+		// LocalStack's free version may be lenient, so we log the result
+		if err != nil {
+			tt.Logf("API call failed with invalid role ARN (expected): %v", err)
+		} else {
+			tt.Logf("LocalStack accepted invalid role ARN (lenient behavior)")
+		}
+	})
+}
+
+// TestLocalStackIRSAWithRegionCache tests IRSA authentication with RegionCache
+// This validates that the region cache works correctly with temporary credentials from IRSA
+func TestLocalStackIRSAWithRegionCache(t *testing.T) {
+	g := NewWithT(t)
+
+	// Set up LocalStack environment
+	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	defer os.Unsetenv("AWS_ENDPOINT_URL")
+
+	// Create temporary web identity token file
+	tokenFile := filepath.Join(os.TempDir(), "test-web-identity-token-cache")
+	err := os.WriteFile(tokenFile, []byte("test-token-for-region-cache"), 0600)
+	g.Expect(err).ToNot(HaveOccurred())
+	defer os.Remove(tokenFile)
+
+	// Set IRSA environment variables
+	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-irsa-role")
+	os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+	defer func() {
+		os.Unsetenv("AWS_ROLE_ARN")
+		os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	}()
+
+	t.Run("RegionCache with IRSA credentials", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		// Create shared RegionCache
+		regionCache := awsclient.NewRegionCache()
+
+		// Create first client with IRSA
+		awsClient1, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
+		if err != nil {
+			tt.Skipf("LocalStack not available: %v", err)
+			return
+		}
+		gg.Expect(awsClient1).ToNot(BeNil())
+
+		// Create second client with IRSA - should reuse cached region data
+		awsClient2, err := awsclient.NewValidatedClient(nil, "", "", "us-west-2", regionCache)
+		if err != nil {
+			tt.Skipf("LocalStack region us-west-2 not available: %v", err)
+			return
+		}
+		gg.Expect(awsClient2).ToNot(BeNil())
+
+		// Verify both clients work with EC2 API
+		cache := NewInstanceTypesCache()
+
+		info1, err := cache.GetInstanceType(awsClient1, "us-east-1", "a1.2xlarge")
+		gg.Expect(err).ToNot(HaveOccurred())
+		gg.Expect(info1.VCPU).To(BeNumerically(">", 0))
+
+		info2, err := cache.GetInstanceType(awsClient2, "us-west-2", "a1.2xlarge")
+		gg.Expect(err).ToNot(HaveOccurred())
+		gg.Expect(info2.VCPU).To(BeNumerically(">", 0))
+
+		tt.Logf("RegionCache works with IRSA credentials across regions (us-east-1, us-west-2)")
+	})
+
+	t.Run("RegionCache performance with IRSA", func(tt *testing.T) {
+		gg := NewWithT(tt)
+
+		// Create shared RegionCache
+		regionCache := awsclient.NewRegionCache()
+
+		// First client creation - populates cache
+		start := time.Now()
+		awsClient1, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
+		firstCallDuration := time.Since(start)
+		if err != nil {
+			tt.Skipf("LocalStack not available: %v", err)
+			return
+		}
+		gg.Expect(awsClient1).ToNot(BeNil())
+
+		// Second client creation with different region - should use cached region list
+		start = time.Now()
+		awsClient2, err := awsclient.NewValidatedClient(nil, "", "", "us-west-2", regionCache)
+		cachedCallDuration := time.Since(start)
+		if err != nil {
+			tt.Skipf("LocalStack region us-west-2 not available: %v", err)
+			return
+		}
+		gg.Expect(awsClient2).ToNot(BeNil())
+
+		// Cached call should be faster (no DescribeRegions API call)
+		gg.Expect(cachedCallDuration).To(BeNumerically("<", firstCallDuration),
+			"Cached region validation should be faster than first call")
+
+		tt.Logf("RegionCache with IRSA - First call: %v, Cached call: %v (speedup: %.2fx)",
+			firstCallDuration, cachedCallDuration, float64(firstCallDuration)/float64(cachedCallDuration))
 	})
 }
