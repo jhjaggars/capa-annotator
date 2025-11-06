@@ -61,7 +61,7 @@ jobs:
         AWS_REGION: us-east-1
       run: |
         echo "Running LocalStack integration tests..."
-        go test -v -tags=localstack ./pkg/controller -timeout 5m
+        go test -v -tags=localstack -run TestLocalStack ./pkg/controller -timeout 5m
 
     - name: Show test summary
       if: success()

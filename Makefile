@@ -129,5 +129,5 @@ test-localstack: localstack-up
 		AWS_ACCESS_KEY_ID=test \
 		AWS_SECRET_ACCESS_KEY=test \
 		AWS_REGION=us-east-1 \
-		$(GOTEST) -v -tags=localstack ./pkg/controller -timeout 5m
+		$(GOTEST) -v -tags=localstack -run TestLocalStack ./pkg/controller -timeout 5m
 	@$(MAKE) localstack-down
