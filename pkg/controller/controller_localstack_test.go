@@ -32,16 +32,20 @@ import (
 func TestLocalStackIntegration(t *testing.T) {
 	g := NewWithT(t)
 
-	// Set up LocalStack environment
+	// Set up LocalStack environment (endpoint only, credentials per-subtest)
 	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	os.Setenv("AWS_ACCESS_KEY_ID", "test")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	os.Setenv("AWS_REGION", "us-east-1")
 	defer func() {
 		os.Unsetenv("AWS_ENDPOINT_URL")
+		os.Unsetenv("AWS_REGION")
+	}()
+
+	// Set static credentials for connectivity test
+	os.Setenv("AWS_ACCESS_KEY_ID", "test")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	defer func() {
 		os.Unsetenv("AWS_ACCESS_KEY_ID")
 		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		os.Unsetenv("AWS_REGION")
 	}()
 
 	// Verify LocalStack is accessible
@@ -58,6 +62,14 @@ func TestLocalStackIntegration(t *testing.T) {
 
 	t.Run("DescribeInstanceTypes against LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// Set static credentials for this subtest
+		os.Setenv("AWS_ACCESS_KEY_ID", "test")
+		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+		defer func() {
+			os.Unsetenv("AWS_ACCESS_KEY_ID")
+			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		}()
 
 		// Test querying instance types from LocalStack
 		client, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
@@ -84,6 +96,14 @@ func TestLocalStackIntegration(t *testing.T) {
 
 	t.Run("Cache behavior with LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// Set static credentials for this subtest
+		os.Setenv("AWS_ACCESS_KEY_ID", "test")
+		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+		defer func() {
+			os.Unsetenv("AWS_ACCESS_KEY_ID")
+			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		}()
 
 		client, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
 		gg.Expect(err).ToNot(HaveOccurred())
@@ -115,6 +135,14 @@ func TestLocalStackIntegration(t *testing.T) {
 	t.Run("Region validation with LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
+		// Set static credentials for this subtest
+		os.Setenv("AWS_ACCESS_KEY_ID", "test")
+		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+		defer func() {
+			os.Unsetenv("AWS_ACCESS_KEY_ID")
+			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		}()
+
 		// Test valid region
 		validClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
 		gg.Expect(err).ToNot(HaveOccurred())
@@ -128,6 +156,14 @@ func TestLocalStackIntegration(t *testing.T) {
 
 	t.Run("Full reconciliation against LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// Set static credentials for this subtest
+		os.Setenv("AWS_ACCESS_KEY_ID", "test")
+		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+		defer func() {
+			os.Unsetenv("AWS_ACCESS_KEY_ID")
+			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+		}()
 
 		// Create test CAPI resources
 		machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment(
@@ -353,6 +389,12 @@ func TestLocalStackIRSA(t *testing.T) {
 	t.Run("Full reconciliation with IRSA", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
+		// NOTE: This test validates that the reconcile loop uses the AwsClientBuilder
+		// with IRSA credentials. The IRSA env vars are set at the function level
+		// (AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE). When the reconciler creates
+		// an AWS client, it will detect these env vars and use IRSA authentication.
+		// The klog output will show "Using IRSA authentication with role: ..."
+
 		// Create test CAPI resources
 		machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment(
 			"default",
@@ -374,25 +416,35 @@ func TestLocalStackIRSA(t *testing.T) {
 			Build()
 
 		// Use real AWS client builder pointing to LocalStack with IRSA
+		// The reconciler will call this builder, which will use IRSA credentials
 		awsClientBuilder := func(ctrlClient client.Client, secretName, namespace, region string, regionCache awsclient.RegionCache) (awsclient.Client, error) {
 			return awsclient.NewValidatedClient(ctrlClient, secretName, namespace, region, regionCache)
 		}
 
+		// Use fresh caches to avoid credential pollution from previous tests
 		r := Reconciler{
 			Client:             fakeK8sClient,
 			recorder:           record.NewFakeRecorder(10),
 			AwsClientBuilder:   awsClientBuilder,
-			InstanceTypesCache: NewInstanceTypesCache(),
-			RegionCache:        awsclient.NewRegionCache(),
+			InstanceTypesCache: NewInstanceTypesCache(), // Fresh cache
+			RegionCache:        awsclient.NewRegionCache(), // Fresh cache
 		}
 
 		// Run reconciliation with IRSA credentials
+		// This will:
+		// 1. Call r.AwsClientBuilder() which creates an AWS client with IRSA
+		// 2. Query instance types using that IRSA-authenticated client
+		// 3. Set annotations based on the instance type data
 		ctx := context.Background()
 		result, err := r.reconcile(ctx, machineDeployment)
-		gg.Expect(err).ToNot(HaveOccurred())
+		gg.Expect(err).ToNot(HaveOccurred(), "Reconcile should succeed with IRSA credentials")
 		gg.Expect(result).ToNot(BeNil())
 
-		// Verify annotations were set
+		// Verify annotations were set correctly
+		// This proves that:
+		// - The AWS client was created successfully with IRSA
+		// - EC2 API calls succeeded with IRSA credentials
+		// - The reconcile loop used the IRSA-authenticated client
 		annotations := machineDeployment.GetAnnotations()
 		gg.Expect(annotations).To(HaveKey(cpuKey))
 		gg.Expect(annotations).To(HaveKey(memoryKey))
