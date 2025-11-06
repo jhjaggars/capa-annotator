@@ -334,6 +334,7 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 	// Check for IRSA environment variables
 	roleARN := os.Getenv("AWS_ROLE_ARN")
 	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
 
 	// Prefer IRSA if configured, otherwise fall back to default credential chain
 	// This allows local testing with ~/.aws/credentials or environment variables
@@ -349,13 +350,30 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 		// 3. EC2 instance metadata
 	}
 
-	// Create AWS config with the configured options
-	cfg, err := config.LoadDefaultConfig(ctx,
+	// Build config options
+	configOptions := []func(*config.LoadOptions) error{
 		config.WithRegion(region),
 		config.WithAPIOptions([]func(*middleware.Stack) error{
 			addUserAgentMiddleware,
 		}),
-	)
+	}
+
+	// Support custom endpoint for LocalStack or other AWS-compatible services
+	if endpointURL != "" {
+		klog.Infof("Using custom AWS endpoint: %s", endpointURL)
+		configOptions = append(configOptions, config.WithEndpointResolverWithOptions(
+			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{
+					URL:               endpointURL,
+					HostnameImmutable: true,
+					Source:            aws.EndpointSourceCustom,
+				}, nil
+			}),
+		))
+	}
+
+	// Create AWS config with the configured options
+	cfg, err := config.LoadDefaultConfig(ctx, configOptions...)
 	if err != nil {
 		return aws.Config{}, err
 	}

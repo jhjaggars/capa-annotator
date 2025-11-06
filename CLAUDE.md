@@ -59,6 +59,9 @@ make test-integration
 # Run all tests (unit + integration)
 make test
 
+# Run LocalStack integration tests (requires podman-compose)
+make test-localstack
+
 # Generate coverage report
 make test-coverage
 # Opens coverage.html
@@ -66,6 +69,32 @@ make test-coverage
 # Run tests with race detector
 make test-race
 ```
+
+### LocalStack Testing
+LocalStack provides a local AWS cloud stack for testing AWS API interactions:
+
+```bash
+# Start LocalStack
+make localstack-up
+
+# Check LocalStack status
+make localstack-health
+
+# View LocalStack logs
+make localstack-logs
+
+# Run tests against LocalStack manually
+AWS_ENDPOINT_URL=http://localhost:4566 \
+AWS_ACCESS_KEY_ID=test \
+AWS_SECRET_ACCESS_KEY=test \
+AWS_REGION=us-east-1 \
+go test -v -tags=localstack ./pkg/controller
+
+# Stop LocalStack
+make localstack-down
+```
+
+See `test/localstack/README.md` for detailed LocalStack documentation.
 
 ### Code Quality
 ```bash
@@ -151,11 +180,35 @@ export KUBECONFIG=/path/to/kubeconfig
 
 ## Testing Notes
 
-- Unit tests use `-short` flag to skip integration tests
-- Integration tests require envtest (setup-envtest@release-0.20)
+### Test Levels
+
+**Unit Tests** (`make test-unit`):
+- Use `-short` flag to skip integration tests
+- Use fake AWS client (`pkg/client/fake/fake.go`)
+- No external dependencies
+- Fast execution (~1-2 seconds)
+- Best for TDD and rapid iteration
+
+**Integration Tests** (`make test-integration`):
+- Require envtest (setup-envtest@release-0.20)
 - Envtest automatically downloads Kubernetes binaries (etcd, kube-apiserver) for version 1.33.0
+- Use fake AWS client but real Kubernetes API server
+- Medium execution time (~10-30 seconds)
+- Tests full controller reconciliation loop
+
+**LocalStack Tests** (`make test-localstack`):
+- Require Podman and podman-compose
+- Use **real AWS SDK client** pointed at LocalStack
+- Emulates AWS EC2, IAM, and STS services
+- Tests actual AWS API behavior
+- Slower execution (~30-60 seconds including LocalStack startup)
+- Best for validating AWS SDK integration
+
+### Test Framework
 - Tests use Ginkgo/Gomega framework
+- Table-driven tests for parameterized scenarios
 - Fake AWS client available in `pkg/client/fake/fake.go`
+- LocalStack tests in `pkg/controller/controller_localstack_test.go` (requires `-tags=localstack`)
 
 ## Project Origin
 

@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration test-coverage test-race clean fmt vet lint image image-multiarch push push-multiarch tidy
+.PHONY: build test test-unit test-integration test-coverage test-race test-localstack localstack-up localstack-down localstack-logs localstack-health clean fmt vet lint image image-multiarch push push-multiarch tidy
 
 # Binary name
 BINARY_NAME=capa-annotator
@@ -91,3 +91,43 @@ image-multiarch:
 # Push multi-architecture container image
 push-multiarch: image-multiarch
 	podman manifest push --all $(IMAGE_NAME):$(IMAGE_TAG) docker://$(IMAGE_NAME):$(IMAGE_TAG)
+
+# LocalStack testing targets
+LOCALSTACK_ENDPOINT=http://localhost:4566
+LOCALSTACK_COMPOSE_FILE=test/localstack/docker-compose.yml
+
+# Start LocalStack using Docker Compose
+localstack-up:
+	@echo "Starting LocalStack with Docker Compose..."
+	@cd test/localstack && docker compose up -d
+	@echo "Waiting for LocalStack to be ready..."
+	@until curl -sf $(LOCALSTACK_ENDPOINT)/_localstack/health | grep -q '"ec2": "running"'; do \
+		echo "  Waiting for EC2 service..."; \
+		sleep 2; \
+	done
+	@echo "✓ LocalStack is ready at $(LOCALSTACK_ENDPOINT)"
+
+# Stop LocalStack
+localstack-down:
+	@echo "Stopping LocalStack..."
+	@cd test/localstack && docker compose down -v
+	@echo "✓ LocalStack stopped"
+
+# View LocalStack logs
+localstack-logs:
+	@docker logs -f capa-annotator-localstack
+
+# Check LocalStack health
+localstack-health:
+	@echo "LocalStack Health Status:"
+	@curl -s $(LOCALSTACK_ENDPOINT)/_localstack/health | jq '.' || echo "LocalStack not running or jq not installed"
+
+# Run LocalStack integration tests
+test-localstack: localstack-up
+	@echo "Running LocalStack integration tests..."
+	@AWS_ENDPOINT_URL=$(LOCALSTACK_ENDPOINT) \
+		AWS_ACCESS_KEY_ID=test \
+		AWS_SECRET_ACCESS_KEY=test \
+		AWS_REGION=us-east-1 \
+		$(GOTEST) -v -tags=localstack ./pkg/controller -timeout 5m
+	@$(MAKE) localstack-down

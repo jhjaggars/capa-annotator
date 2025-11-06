@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # LocalStack - emulates AWS EC2, IAM, and STS for testing
+  localstack:
+    image: localstack/localstack:latest
+    container_name: capa-annotator-localstack
+    ports:
+      - "4566:4566"  # LocalStack gateway
+    environment:
+      # Only enable services we need for testing
+      - SERVICES=ec2,sts,iam
+      - DEBUG=1
+      - PERSISTENCE=0
+      - AWS_DEFAULT_REGION=us-east-1
+      - DISABLE_CORS_CHECKS=1
+      - EAGER_SERVICE_LOADING=1
+    volumes:
+      # Mount Podman socket so LocalStack can interact with container runtime if needed
+      # Default: Podman socket for local development (/run/user/1000/podman/podman.sock)
+      # CI: Set DOCKER_SOCK=/var/run/docker.sock to use Docker socket
+      # Note: Update UID (1000) if your user ID is different (run: id -u)
+      - ${DOCKER_SOCK:-/run/user/1000/podman/podman.sock}:/var/run/docker.sock:Z
+      # Initialization scripts to seed LocalStack with test data
+      - ./init:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - capa-test-network
+
+networks:
+  capa-test-network:
+    name: capa-annotator-test-network
+    driver: bridge

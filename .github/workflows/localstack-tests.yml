@@ -1,0 +1,104 @@
+name: LocalStack Integration Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  localstack-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Install dependencies
+      run: |
+        go mod download
+        go mod verify
+
+    - name: Start LocalStack
+      env:
+        DOCKER_SOCK: /var/run/docker.sock
+      run: |
+        echo "Starting LocalStack with Docker Compose..."
+        cd test/localstack
+        docker compose up -d
+
+        echo "Waiting for LocalStack to be ready..."
+        timeout 60 bash -c 'until curl -sf http://localhost:4566/_localstack/health | grep -q "\"ec2\": \"running\""; do echo "  Waiting for EC2 service..."; sleep 2; done'
+
+        echo "✅ LocalStack started successfully"
+
+    - name: Verify LocalStack health
+      run: |
+        echo "Checking LocalStack health..."
+        curl -s http://localhost:4566/_localstack/health | jq '.'
+
+        echo ""
+        echo "Verifying EC2 service..."
+        curl -s http://localhost:4566/_localstack/health | jq '.services.ec2'
+
+    - name: Run unit tests
+      run: |
+        echo "Running unit tests..."
+        make test-unit
+
+    - name: Run LocalStack integration tests
+      env:
+        AWS_ENDPOINT_URL: http://localhost:4566
+        AWS_ACCESS_KEY_ID: test
+        AWS_SECRET_ACCESS_KEY: test
+        AWS_REGION: us-east-1
+      run: |
+        echo "Running LocalStack integration tests..."
+        go test -v -tags=localstack ./pkg/controller -timeout 5m
+
+    - name: Show test summary
+      if: success()
+      run: |
+        echo "=== LocalStack Integration Test Summary ==="
+        echo "✅ LocalStack deployment: OK"
+        echo "✅ Unit tests: OK"
+        echo "✅ LocalStack integration tests: OK"
+        echo ""
+        echo "🎉 All LocalStack integration tests passed!"
+
+    - name: Cleanup and debug (if test fails)
+      if: failure()
+      run: |
+        echo "=== Debug Information ==="
+        echo ""
+
+        echo "Docker containers:"
+        docker ps -a
+        echo ""
+
+        echo "LocalStack logs:"
+        docker logs capa-annotator-localstack --tail=100 2>&1 || echo "Could not get LocalStack logs"
+        echo ""
+
+        echo "LocalStack health:"
+        curl -s http://localhost:4566/_localstack/health 2>&1 || echo "LocalStack not responding"
+        echo ""
+
+        echo "Test artifacts:"
+        ls -la test/localstack/ 2>&1 || echo "No test directory"
+        echo ""
+
+    - name: Stop LocalStack
+      if: always()
+      run: |
+        echo "Stopping LocalStack..."
+        cd test/localstack
+        docker compose down -v || echo "LocalStack already stopped"
+        echo "✅ LocalStack stopped"
