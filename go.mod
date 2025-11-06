@@ -11,7 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.260.0
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing v1.29.6
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.51.4
-	github.com/aws/smithy-go v1.23.1
+	github.com/aws/smithy-go v1.23.2
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
