@@ -68,6 +68,63 @@ func createTestJWT() (string, error) {
 	return headerB64 + "." + payloadB64 + ".", nil
 }
 
+// verifyCredentialSource retrieves the credentials from an AWS config and verifies
+// that they came from the expected source. This ensures IRSA tests actually use IRSA
+// and don't fall back to static credentials.
+//
+// Expected sources:
+// - IRSA: "WebIdentityTokenProvider" or contains "AssumeRoleWithWebIdentity"
+// - Static: "StaticCredentials" or "EnvCredentials" or "EnvironmentCredentials"
+func verifyCredentialSource(ctx context.Context, cfg aws.Config, expectedSource string, t *testing.T) error {
+	creds, err := cfg.Credentials.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve credentials: %w", err)
+	}
+
+	t.Logf("Credential source: %s (expected to contain: %s)", creds.Source, expectedSource)
+
+	// Check if the source matches expected pattern
+	if !strings.Contains(creds.Source, expectedSource) {
+		return fmt.Errorf("unexpected credential source: got %q, expected to contain %q",
+			creds.Source, expectedSource)
+	}
+
+	return nil
+}
+
+// verifyIRSAEnvironment verifies that IRSA environment variables are set correctly
+// and that static credentials are NOT set. This ensures IRSA tests won't fall back
+// to static credentials due to AWS SDK credential chain precedence.
+//
+// Note: We don't actually retrieve credentials here because LocalStack's free tier
+// has limited IRSA support - the OIDC provider can be created but STS AssumeRoleWithWebIdentity
+// may not work correctly. However, we can still verify the environment is configured
+// correctly so that in production, IRSA would be used.
+func verifyIRSAEnvironment(t *testing.T) error {
+	// Verify IRSA env vars are set
+	roleARN := os.Getenv("AWS_ROLE_ARN")
+	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+
+	if roleARN == "" {
+		return fmt.Errorf("AWS_ROLE_ARN is not set - IRSA won't be used")
+	}
+	if tokenFile == "" {
+		return fmt.Errorf("AWS_WEB_IDENTITY_TOKEN_FILE is not set - IRSA won't be used")
+	}
+
+	// CRITICAL: Verify static credentials are NOT set
+	// Static credentials have higher priority in AWS SDK credential chain
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+
+	if accessKey != "" || secretKey != "" {
+		return fmt.Errorf("static credentials are set (AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY) - these take precedence over IRSA and will prevent IRSA from being used")
+	}
+
+	t.Logf("IRSA environment verified: role=%s, token file=%s, no static credentials", roleARN, tokenFile)
+	return nil
+}
+
 // TestLocalStackIntegration tests the controller against a running LocalStack instance
 // This test requires LocalStack to be running at http://localhost:4566
 //
@@ -78,21 +135,11 @@ func createTestJWT() (string, error) {
 func TestLocalStackIntegration(t *testing.T) {
 	g := NewWithT(t)
 
-	// Set up LocalStack environment (endpoint only, credentials per-subtest)
-	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	os.Setenv("AWS_REGION", "us-east-1")
-	defer func() {
-		os.Unsetenv("AWS_ENDPOINT_URL")
-		os.Unsetenv("AWS_REGION")
-	}()
-
-	// Set static credentials for connectivity test
-	os.Setenv("AWS_ACCESS_KEY_ID", "test")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	defer func() {
-		os.Unsetenv("AWS_ACCESS_KEY_ID")
-		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-	}()
+	// Set up LocalStack environment with static credentials
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 	// Verify LocalStack is accessible
 	ctx := context.Background()
@@ -109,13 +156,7 @@ func TestLocalStackIntegration(t *testing.T) {
 	t.Run("DescribeInstanceTypes against LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
-		// Set static credentials for this subtest
-		os.Setenv("AWS_ACCESS_KEY_ID", "test")
-		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-		defer func() {
-			os.Unsetenv("AWS_ACCESS_KEY_ID")
-			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		}()
+		// Static credentials inherited from parent test
 
 		// Test querying instance types from LocalStack
 		client, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
@@ -143,13 +184,7 @@ func TestLocalStackIntegration(t *testing.T) {
 	t.Run("Cache behavior with LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
-		// Set static credentials for this subtest
-		os.Setenv("AWS_ACCESS_KEY_ID", "test")
-		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-		defer func() {
-			os.Unsetenv("AWS_ACCESS_KEY_ID")
-			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		}()
+		// Static credentials inherited from parent test
 
 		client, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
 		gg.Expect(err).ToNot(HaveOccurred())
@@ -181,13 +216,7 @@ func TestLocalStackIntegration(t *testing.T) {
 	t.Run("Region validation with LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
-		// Set static credentials for this subtest
-		os.Setenv("AWS_ACCESS_KEY_ID", "test")
-		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-		defer func() {
-			os.Unsetenv("AWS_ACCESS_KEY_ID")
-			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		}()
+		// Static credentials inherited from parent test
 
 		// Test valid region
 		validClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
@@ -203,13 +232,7 @@ func TestLocalStackIntegration(t *testing.T) {
 	t.Run("Full reconciliation against LocalStack", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
-		// Set static credentials for this subtest
-		os.Setenv("AWS_ACCESS_KEY_ID", "test")
-		os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-		defer func() {
-			os.Unsetenv("AWS_ACCESS_KEY_ID")
-			os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		}()
+		// Static credentials inherited from parent test
 
 		// Create test CAPI resources
 		machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment(
@@ -267,15 +290,10 @@ func TestLocalStackMultiRegion(t *testing.T) {
 		t.Skip("Skipping multi-region test in short mode")
 	}
 
-	// Set up LocalStack environment
-	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	os.Setenv("AWS_ACCESS_KEY_ID", "test")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	defer func() {
-		os.Unsetenv("AWS_ENDPOINT_URL")
-		os.Unsetenv("AWS_ACCESS_KEY_ID")
-		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-	}()
+	// Set up LocalStack environment with static credentials
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 	regions := []string{"us-east-1", "us-west-2", "eu-west-1"}
 
@@ -306,16 +324,11 @@ func TestLocalStackMultiRegion(t *testing.T) {
 
 // TestLocalStackErrorScenarios tests error handling with LocalStack
 func TestLocalStackErrorScenarios(t *testing.T) {
-	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	os.Setenv("AWS_ACCESS_KEY_ID", "test")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	os.Setenv("AWS_REGION", "us-east-1")
-	defer func() {
-		os.Unsetenv("AWS_ENDPOINT_URL")
-		os.Unsetenv("AWS_ACCESS_KEY_ID")
-		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-		os.Unsetenv("AWS_REGION")
-	}()
+	// Set up LocalStack environment with static credentials
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_REGION", "us-east-1")
 
 	t.Run("Invalid instance type", func(tt *testing.T) {
 		gg := NewWithT(tt)
@@ -358,19 +371,29 @@ func TestLocalStackErrorScenarios(t *testing.T) {
 // setupLocalStackIRSA creates the OIDC provider and IAM role required for IRSA testing in LocalStack.
 // This is needed because LocalStack init scripts may not run reliably on all platforms.
 func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
-	// Import AWS SDK packages for IAM operations
+	// Temporarily set static credentials for IAM operations (setup only)
+	// We use os.Setenv/Unsetenv here because we need fine-grained control over when
+	// these credentials are active. t.Setenv() would persist for the entire test.
+	os.Setenv("AWS_ACCESS_KEY_ID", "test")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	defer func() {
+		os.Unsetenv("AWS_ACCESS_KEY_ID")
+		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	}()
+
+	// Create IAM config for setup operations
+	// Use the modern BaseEndpoint approach instead of deprecated EndpointResolverWithOptions
 	iamCfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{URL: "http://localhost:4566"}, nil
-			})),
 	)
 	if err != nil {
 		return err
 	}
 
-	iamClient := iam.NewFromConfig(iamCfg)
+	// Create IAM client with custom endpoint for LocalStack
+	iamClient := iam.NewFromConfig(iamCfg, func(o *iam.Options) {
+		o.BaseEndpoint = aws.String("http://localhost:4566")
+	})
 
 	// Create OIDC provider (idempotent - ignore AlreadyExists errors)
 	_, err = iamClient.CreateOpenIDConnectProvider(ctx, &iam.CreateOpenIDConnectProviderInput{
@@ -401,13 +424,36 @@ func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
 		return fmt.Errorf("failed to create IAM role: %w", err)
 	}
 
-	t.Log("LocalStack IRSA setup complete: OIDC provider and IAM role created")
+	// Verify the OIDC provider actually exists by listing it
+	listOutput, err := iamClient.ListOpenIDConnectProviders(ctx, &iam.ListOpenIDConnectProvidersInput{})
+	if err != nil {
+		return fmt.Errorf("failed to verify OIDC provider: %w", err)
+	}
+
+	found := false
+	for _, provider := range listOutput.OpenIDConnectProviderList {
+		if provider.Arn != nil && strings.Contains(*provider.Arn, "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE") {
+			found = true
+			t.Logf("Verified OIDC provider exists: %s", *provider.Arn)
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("OIDC provider was not found after creation")
+	}
+
+	t.Log("LocalStack IRSA setup complete: OIDC provider and IAM role created and verified")
 	return nil
 }
 
 // TestLocalStackIRSA tests IRSA (IAM Roles for Service Accounts) authentication with LocalStack
 // This test validates that the controller can authenticate using web identity tokens
 // and assumes an IAM role created in LocalStack (test-irsa-role).
+//
+// IMPORTANT: This test must ensure that AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are
+// NOT set in the environment when creating IRSA clients, as static credentials take
+// precedence over IRSA in the AWS SDK credential chain.
 //
 // To run this test:
 //   make localstack-up
@@ -416,19 +462,12 @@ func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
 func TestLocalStackIRSA(t *testing.T) {
 	g := NewWithT(t)
 
-	// Set up LocalStack environment
-	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	defer os.Unsetenv("AWS_ENDPOINT_URL")
-
-	// Set up static credentials for OIDC provider and role creation
-	os.Setenv("AWS_ACCESS_KEY_ID", "test")
-	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	defer func() {
-		os.Unsetenv("AWS_ACCESS_KEY_ID")
-		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-	}()
+	// Set up LocalStack endpoint - do this early so setupLocalStackIRSA can use it
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	t.Setenv("AWS_REGION", "us-east-1")
 
 	// Create OIDC provider and IAM role in LocalStack
+	// Note: setupLocalStackIRSA will temporarily set/unset static credentials internally
 	ctx := context.Background()
 	err := setupLocalStackIRSA(ctx, t)
 	if err != nil {
@@ -436,9 +475,17 @@ func TestLocalStackIRSA(t *testing.T) {
 		return
 	}
 
-	// Clear static credentials now that setup is complete
+	// CRITICAL: Explicitly unset any static credentials that might be set by Makefile
+	// setupLocalStackIRSA already unset its own, but Makefile-level vars might persist
+	// Static credentials have higher priority than IRSA in AWS SDK credential chain
 	os.Unsetenv("AWS_ACCESS_KEY_ID")
 	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+
+	// Double-check that static credentials are truly NOT set
+	// This is critical because if they are, IRSA won't be used!
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+		t.Fatal("Static credentials still set after IRSA setup - this will prevent IRSA from being used!")
+	}
 
 	// Create a valid JWT token for IRSA testing
 	jwtToken, err := createTestJWT()
@@ -450,17 +497,16 @@ func TestLocalStackIRSA(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	defer os.Remove(tokenFile)
 
-	// Set IRSA environment variables
-	// This role is created by test/localstack/init/01-setup-ec2.sh
-	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
-	os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
-	defer func() {
-		os.Unsetenv("AWS_ROLE_ARN")
-		os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
-	}()
+	// Set IRSA environment variables ONLY (no static credentials)
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 
 	t.Run("Basic IRSA authentication flow", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// CRITICAL: Verify that IRSA credentials are being used, not static credentials
+		err := verifyIRSAEnvironment(tt)
+		gg.Expect(err).ToNot(HaveOccurred(), "Should be using IRSA credentials, not static credentials")
 
 		// Create AWS client - should use IRSA to assume role via STS
 		regionCache := awsclient.NewRegionCache()
@@ -485,6 +531,10 @@ func TestLocalStackIRSA(t *testing.T) {
 	t.Run("IRSA with multiple instance type queries", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
+		// Verify IRSA credentials are being used
+		err := verifyIRSAEnvironment(tt)
+		gg.Expect(err).ToNot(HaveOccurred(), "Should be using IRSA credentials")
+
 		regionCache := awsclient.NewRegionCache()
 		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
 		if err != nil {
@@ -507,6 +557,10 @@ func TestLocalStackIRSA(t *testing.T) {
 
 	t.Run("Full reconciliation with IRSA", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// Verify IRSA credentials are being used
+		err := verifyIRSAEnvironment(tt)
+		gg.Expect(err).ToNot(HaveOccurred(), "Should be using IRSA credentials")
 
 		// NOTE: This test validates that the reconcile loop uses the AwsClientBuilder
 		// with IRSA credentials. The IRSA env vars are set at the function level
@@ -578,20 +632,20 @@ func TestLocalStackIRSA(t *testing.T) {
 // TestLocalStackIRSAInvalidToken tests error scenarios with IRSA authentication
 func TestLocalStackIRSAInvalidToken(t *testing.T) {
 	// Set up LocalStack environment
-	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	defer os.Unsetenv("AWS_ENDPOINT_URL")
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	t.Setenv("AWS_REGION", "us-east-1")
+
+	// CRITICAL: Ensure static credentials are NOT set (IRSA tests only)
+	os.Unsetenv("AWS_ACCESS_KEY_ID")
+	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
 
 	t.Run("Missing token file", func(tt *testing.T) {
 		gg := NewWithT(tt)
 
 		// Set IRSA env vars with non-existent token file
 		nonExistentFile := filepath.Join(os.TempDir(), "non-existent-token-file")
-		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
-		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", nonExistentFile)
-		defer func() {
-			os.Unsetenv("AWS_ROLE_ARN")
-			os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
-		}()
+		tt.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
+		tt.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", nonExistentFile)
 
 		regionCache := awsclient.NewRegionCache()
 		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
@@ -632,12 +686,8 @@ func TestLocalStackIRSAInvalidToken(t *testing.T) {
 		defer os.Remove(tokenFile)
 
 		// Set IRSA env vars with non-existent role
-		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/non-existent-role")
-		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
-		defer func() {
-			os.Unsetenv("AWS_ROLE_ARN")
-			os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
-		}()
+		tt.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/non-existent-role")
+		tt.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 
 		regionCache := awsclient.NewRegionCache()
 		awsClient, err := awsclient.NewValidatedClient(nil, "", "", "us-east-1", regionCache)
@@ -668,8 +718,25 @@ func TestLocalStackIRSAWithRegionCache(t *testing.T) {
 	g := NewWithT(t)
 
 	// Set up LocalStack environment
-	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
-	defer os.Unsetenv("AWS_ENDPOINT_URL")
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	t.Setenv("AWS_REGION", "us-east-1")
+
+	// CRITICAL: Ensure static credentials are NOT set (IRSA tests only)
+	os.Unsetenv("AWS_ACCESS_KEY_ID")
+	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+
+	// Create OIDC provider and IAM role in LocalStack (if not already exists)
+	ctx := context.Background()
+	err := setupLocalStackIRSA(ctx, t)
+	if err != nil {
+		t.Skipf("Failed to setup LocalStack IRSA resources: %v", err)
+		return
+	}
+
+	// Verify static credentials are still NOT set after setup
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
+		t.Fatal("Static credentials still set after IRSA setup - this will prevent IRSA from being used!")
+	}
 
 	// Create a valid JWT token for IRSA testing
 	jwtToken, err := createTestJWT()
@@ -681,16 +748,16 @@ func TestLocalStackIRSAWithRegionCache(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	defer os.Remove(tokenFile)
 
-	// Set IRSA environment variables
-	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
-	os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
-	defer func() {
-		os.Unsetenv("AWS_ROLE_ARN")
-		os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
-	}()
+	// Set IRSA environment variables ONLY (no static credentials)
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 
 	t.Run("RegionCache with IRSA credentials", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// Verify IRSA credentials are being used
+		err := verifyIRSAEnvironment(tt)
+		gg.Expect(err).ToNot(HaveOccurred(), "Should be using IRSA credentials")
 
 		// Create shared RegionCache
 		regionCache := awsclient.NewRegionCache()
@@ -727,6 +794,10 @@ func TestLocalStackIRSAWithRegionCache(t *testing.T) {
 
 	t.Run("RegionCache performance with IRSA", func(tt *testing.T) {
 		gg := NewWithT(tt)
+
+		// Verify IRSA credentials are being used
+		err := verifyIRSAEnvironment(tt)
+		gg.Expect(err).ToNot(HaveOccurred(), "Should be using IRSA credentials")
 
 		// Create shared RegionCache
 		regionCache := awsclient.NewRegionCache()

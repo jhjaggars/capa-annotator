@@ -174,10 +174,13 @@ func NewClient(ctrlRuntimeClient client.Client, secretName, namespace, region st
 		return nil, err
 	}
 
+	// Get custom endpoint URL for LocalStack/testing
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
+
 	return &awsClient{
-		ec2Client:   ec2.NewFromConfig(cfg),
-		elbClient:   elasticloadbalancing.NewFromConfig(cfg),
-		elbv2Client: elasticloadbalancingv2.NewFromConfig(cfg),
+		ec2Client:   ec2.NewFromConfig(cfg, applyEndpointURL(endpointURL)),
+		elbClient:   elasticloadbalancing.NewFromConfig(cfg, applyEndpointURLForELB(endpointURL)),
+		elbv2Client: elasticloadbalancingv2.NewFromConfig(cfg, applyEndpointURLForELBv2(endpointURL)),
 	}, nil
 }
 
@@ -199,10 +202,13 @@ func NewClientFromKeys(accessKey, secretAccessKey, region string) (Client, error
 		return nil, err
 	}
 
+	// Get custom endpoint URL for LocalStack/testing
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
+
 	return &awsClient{
-		ec2Client:   ec2.NewFromConfig(cfg),
-		elbClient:   elasticloadbalancing.NewFromConfig(cfg),
-		elbv2Client: elasticloadbalancingv2.NewFromConfig(cfg),
+		ec2Client:   ec2.NewFromConfig(cfg, applyEndpointURL(endpointURL)),
+		elbClient:   elasticloadbalancing.NewFromConfig(cfg, applyEndpointURLForELB(endpointURL)),
+		elbv2Client: elasticloadbalancingv2.NewFromConfig(cfg, applyEndpointURLForELBv2(endpointURL)),
 	}, nil
 }
 
@@ -334,7 +340,6 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 	// Check for IRSA environment variables
 	roleARN := os.Getenv("AWS_ROLE_ARN")
 	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
-	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
 
 	// Prefer IRSA if configured, otherwise fall back to default credential chain
 	// This allows local testing with ~/.aws/credentials or environment variables
@@ -358,28 +363,44 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 		}),
 	}
 
-	// Support custom endpoint for LocalStack or other AWS-compatible services
-	// Use EndpointResolverWithOptions to ensure the endpoint applies to ALL services
-	// including STS (used by IRSA credential provider)
-	if endpointURL != "" {
-		klog.Infof("Using custom AWS endpoint: %s", endpointURL)
-		configOptions = append(configOptions, config.WithEndpointResolverWithOptions(
-			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{
-					URL:               endpointURL,
-					HostnameImmutable: true,
-				}, nil
-			}),
-		))
-	}
-
 	// Create AWS config with the configured options
+	// Note: Custom endpoints for LocalStack/testing are set per-service via BaseEndpoint
+	// rather than globally, to use the modern v2 API and avoid deprecation warnings
 	cfg, err := config.LoadDefaultConfig(ctx, configOptions...)
 	if err != nil {
 		return aws.Config{}, err
 	}
 
 	return cfg, nil
+}
+
+// applyEndpointURL applies a custom endpoint URL to service client options if configured.
+// This is used for LocalStack and other AWS-compatible services.
+// The AWS_ENDPOINT_URL environment variable is automatically respected by the SDK's
+// credential providers (including IRSA), so this only needs to be called for service clients.
+func applyEndpointURL(endpointURL string) func(*ec2.Options) {
+	return func(o *ec2.Options) {
+		if endpointURL != "" {
+			klog.Infof("Using custom AWS endpoint: %s", endpointURL)
+			o.BaseEndpoint = aws.String(endpointURL)
+		}
+	}
+}
+
+func applyEndpointURLForELB(endpointURL string) func(*elasticloadbalancing.Options) {
+	return func(o *elasticloadbalancing.Options) {
+		if endpointURL != "" {
+			o.BaseEndpoint = aws.String(endpointURL)
+		}
+	}
+}
+
+func applyEndpointURLForELBv2(endpointURL string) func(*elasticloadbalancingv2.Options) {
+	return func(o *elasticloadbalancingv2.Options) {
+		if endpointURL != "" {
+			o.BaseEndpoint = aws.String(endpointURL)
+		}
+	}
 }
 
 // addUserAgentMiddleware adds capa-annotator version information to requests made by the AWS SDK.
