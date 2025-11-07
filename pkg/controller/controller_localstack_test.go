@@ -1,4 +1,3 @@
-// go:build localstack
 //go:build localstack
 
 package controller
@@ -23,8 +22,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -129,9 +128,10 @@ func verifyIRSAEnvironment(t *testing.T) error {
 // This test requires LocalStack to be running at http://localhost:4566
 //
 // To run these tests:
-//   make localstack-up
-//   make test-localstack
-//   make localstack-down
+//
+//	make localstack-up
+//	make test-localstack
+//	make localstack-down
 func TestLocalStackIntegration(t *testing.T) {
 	g := NewWithT(t)
 
@@ -456,9 +456,10 @@ func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
 // precedence over IRSA in the AWS SDK credential chain.
 //
 // To run this test:
-//   make localstack-up
-//   make test-localstack
-//   make localstack-down
+//
+//	make localstack-up
+//	make test-localstack
+//	make localstack-down
 func TestLocalStackIRSA(t *testing.T) {
 	g := NewWithT(t)
 
@@ -599,7 +600,7 @@ func TestLocalStackIRSA(t *testing.T) {
 			Client:             fakeK8sClient,
 			recorder:           record.NewFakeRecorder(10),
 			AwsClientBuilder:   awsClientBuilder,
-			InstanceTypesCache: NewInstanceTypesCache(), // Fresh cache
+			InstanceTypesCache: NewInstanceTypesCache(),    // Fresh cache
 			RegionCache:        awsclient.NewRegionCache(), // Fresh cache
 		}
 

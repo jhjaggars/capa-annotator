@@ -340,6 +340,7 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 	// Check for IRSA environment variables
 	roleARN := os.Getenv("AWS_ROLE_ARN")
 	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
 
 	// Prefer IRSA if configured, otherwise fall back to default credential chain
 	// This allows local testing with ~/.aws/credentials or environment variables
@@ -363,9 +364,28 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 		}),
 	}
 
+	// If using LocalStack or custom endpoint, configure it for all services including
+	// the STS client used by credential providers (e.g., IRSA)
+	if endpointURL != "" {
+		klog.Infof("Configuring custom endpoint for all services: %s", endpointURL)
+		// Note: EndpointResolverWithOptions is deprecated, but required for LocalStack IRSA.
+		// The WebIdentityCredentials provider creates its own internal STS client that needs
+		// global endpoint configuration. BaseEndpoint only works for service clients we create
+		// directly. This is only used in testing scenarios where AWS_ENDPOINT_URL is set.
+		//lint:ignore SA1019 Deprecated but required for LocalStack IRSA testing
+		configOptions = append(configOptions, config.WithEndpointResolverWithOptions(
+			//lint:ignore SA1019 Deprecated but required for LocalStack IRSA testing
+			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				//lint:ignore SA1019 Deprecated but required for LocalStack IRSA testing
+				return aws.Endpoint{
+					URL:           endpointURL,
+					SigningRegion: region,
+				}, nil
+			}),
+		))
+	}
+
 	// Create AWS config with the configured options
-	// Note: Custom endpoints for LocalStack/testing are set per-service via BaseEndpoint
-	// rather than globally, to use the modern v2 API and avoid deprecation warnings
 	cfg, err := config.LoadDefaultConfig(ctx, configOptions...)
 	if err != nil {
 		return aws.Config{}, err
