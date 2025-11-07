@@ -359,9 +359,18 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 	}
 
 	// Support custom endpoint for LocalStack or other AWS-compatible services
+	// Use EndpointResolverWithOptions to ensure the endpoint applies to ALL services
+	// including STS (used by IRSA credential provider)
 	if endpointURL != "" {
 		klog.Infof("Using custom AWS endpoint: %s", endpointURL)
-		configOptions = append(configOptions, config.WithBaseEndpoint(endpointURL))
+		configOptions = append(configOptions, config.WithEndpointResolverWithOptions(
+			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{
+					URL:               endpointURL,
+					HostnameImmutable: true,
+				}, nil
+			}),
+		))
 	}
 
 	// Create AWS config with the configured options

@@ -7,12 +7,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	awsclient "github.com/jhjaggars/capa-annotator/pkg/client"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,11 +40,13 @@ func createTestJWT() (string, error) {
 	}
 
 	// Payload with required claims for IRSA
-	// exp set to year 2286 to ensure token doesn't expire during tests
+	// iat set to current time, exp set to year 2286 to ensure token doesn't expire during tests
+	now := time.Now().Unix()
 	payload := map[string]interface{}{
 		"sub": "test-user",
 		"aud": "sts.amazonaws.com",
-		"iat": 1234567890,
+		"iss": "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE",
+		"iat": now,
 		"exp": 9999999999,
 	}
 
@@ -348,6 +355,56 @@ func TestLocalStackErrorScenarios(t *testing.T) {
 	})
 }
 
+// setupLocalStackIRSA creates the OIDC provider and IAM role required for IRSA testing in LocalStack.
+// This is needed because LocalStack init scripts may not run reliably on all platforms.
+func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
+	// Import AWS SDK packages for IAM operations
+	iamCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("us-east-1"),
+		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: "http://localhost:4566"}, nil
+			})),
+	)
+	if err != nil {
+		return err
+	}
+
+	iamClient := iam.NewFromConfig(iamCfg)
+
+	// Create OIDC provider (idempotent - ignore AlreadyExists errors)
+	_, err = iamClient.CreateOpenIDConnectProvider(ctx, &iam.CreateOpenIDConnectProviderInput{
+		Url:            aws.String("https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"),
+		ClientIDList:   []string{"sts.amazonaws.com"},
+		ThumbprintList: []string{"9e99a48a9960b14926bb7f3b02e22da2b0ab7280"},
+	})
+	if err != nil && !strings.Contains(err.Error(), "EntityAlreadyExists") {
+		return fmt.Errorf("failed to create OIDC provider: %w", err)
+	}
+
+	// Create IAM role (idempotent - ignore AlreadyExists errors)
+	// Use LocalStack's default account ID (000000000000)
+	assumeRolePolicy := `{
+		"Version": "2012-10-17",
+		"Statement": [{
+			"Effect": "Allow",
+			"Principal": {"Federated": "arn:aws:iam::000000000000:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"},
+			"Action": "sts:AssumeRoleWithWebIdentity"
+		}]
+	}`
+
+	_, err = iamClient.CreateRole(ctx, &iam.CreateRoleInput{
+		RoleName:                 aws.String("test-irsa-role"),
+		AssumeRolePolicyDocument: aws.String(assumeRolePolicy),
+	})
+	if err != nil && !strings.Contains(err.Error(), "EntityAlreadyExists") {
+		return fmt.Errorf("failed to create IAM role: %w", err)
+	}
+
+	t.Log("LocalStack IRSA setup complete: OIDC provider and IAM role created")
+	return nil
+}
+
 // TestLocalStackIRSA tests IRSA (IAM Roles for Service Accounts) authentication with LocalStack
 // This test validates that the controller can authenticate using web identity tokens
 // and assumes an IAM role created in LocalStack (test-irsa-role).
@@ -363,6 +420,26 @@ func TestLocalStackIRSA(t *testing.T) {
 	os.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 	defer os.Unsetenv("AWS_ENDPOINT_URL")
 
+	// Set up static credentials for OIDC provider and role creation
+	os.Setenv("AWS_ACCESS_KEY_ID", "test")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	defer func() {
+		os.Unsetenv("AWS_ACCESS_KEY_ID")
+		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	}()
+
+	// Create OIDC provider and IAM role in LocalStack
+	ctx := context.Background()
+	err := setupLocalStackIRSA(ctx, t)
+	if err != nil {
+		t.Skipf("Failed to setup LocalStack IRSA resources: %v", err)
+		return
+	}
+
+	// Clear static credentials now that setup is complete
+	os.Unsetenv("AWS_ACCESS_KEY_ID")
+	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+
 	// Create a valid JWT token for IRSA testing
 	jwtToken, err := createTestJWT()
 	g.Expect(err).ToNot(HaveOccurred())
@@ -375,7 +452,7 @@ func TestLocalStackIRSA(t *testing.T) {
 
 	// Set IRSA environment variables
 	// This role is created by test/localstack/init/01-setup-ec2.sh
-	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-irsa-role")
+	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
 	os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 	defer func() {
 		os.Unsetenv("AWS_ROLE_ARN")
@@ -509,7 +586,7 @@ func TestLocalStackIRSAInvalidToken(t *testing.T) {
 
 		// Set IRSA env vars with non-existent token file
 		nonExistentFile := filepath.Join(os.TempDir(), "non-existent-token-file")
-		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-irsa-role")
+		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
 		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", nonExistentFile)
 		defer func() {
 			os.Unsetenv("AWS_ROLE_ARN")
@@ -555,7 +632,7 @@ func TestLocalStackIRSAInvalidToken(t *testing.T) {
 		defer os.Remove(tokenFile)
 
 		// Set IRSA env vars with non-existent role
-		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/non-existent-role")
+		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/non-existent-role")
 		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 		defer func() {
 			os.Unsetenv("AWS_ROLE_ARN")
@@ -605,7 +682,7 @@ func TestLocalStackIRSAWithRegionCache(t *testing.T) {
 	defer os.Remove(tokenFile)
 
 	// Set IRSA environment variables
-	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-irsa-role")
+	os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/test-irsa-role")
 	os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 	defer func() {
 		os.Unsetenv("AWS_ROLE_ARN")

@@ -42,6 +42,14 @@ aws ec2 describe-regions \
 
 echo ""
 echo "=== Setting up IAM for IRSA Testing ==="
+# Create OIDC provider first (required for IRSA)
+aws iam create-open-id-connect-provider \
+  --endpoint-url http://localhost:4566 \
+  --region us-east-1 \
+  --url https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 9e99a48a9960b14926bb7f3b02e22da2b0ab7280 2>/dev/null || echo "  OIDC provider may already exist"
+
 # Create a test IAM role for IRSA authentication testing
 aws iam create-role \
   --endpoint-url http://localhost:4566 \
@@ -51,7 +59,7 @@ aws iam create-role \
     "Version": "2012-10-17",
     "Statement": [{
       "Effect": "Allow",
-      "Principal": {"Federated": "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"},
+      "Principal": {"Federated": "arn:aws:iam::000000000000:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"},
       "Action": "sts:AssumeRoleWithWebIdentity"
     }]
   }' 2>/dev/null || echo "  Role may already exist"
