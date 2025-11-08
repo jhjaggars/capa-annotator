@@ -372,11 +372,11 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 		// The WebIdentityCredentials provider creates its own internal STS client that needs
 		// global endpoint configuration. BaseEndpoint only works for service clients we create
 		// directly. This is only used in testing scenarios where AWS_ENDPOINT_URL is set.
-		//lint:ignore SA1019 Deprecated but required for LocalStack IRSA testing
+		//nolint:staticcheck // SA1019: Deprecated but required for LocalStack IRSA testing
 		configOptions = append(configOptions, config.WithEndpointResolverWithOptions(
-			//lint:ignore SA1019 Deprecated but required for LocalStack IRSA testing
+			//nolint:staticcheck // SA1019: Deprecated but required for LocalStack IRSA testing
 			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				//lint:ignore SA1019 Deprecated but required for LocalStack IRSA testing
+				//nolint:staticcheck // SA1019: Deprecated but required for LocalStack IRSA testing
 				return aws.Endpoint{
 					URL:           endpointURL,
 					SigningRegion: region,
