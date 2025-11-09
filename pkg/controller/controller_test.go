@@ -16,7 +16,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -94,10 +93,10 @@ var _ = Describe("MachineDeploymentReconciler", func() {
 
 	DescribeTable("when reconciling MachineDeployments", func(rtc reconcileTestCase) {
 		// Set IRSA env vars for tests
-		os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
-		os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
-		defer os.Unsetenv("AWS_ROLE_ARN")
-		defer os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+		// Use GinkgoT().Setenv to avoid global state mutation
+		t := GinkgoT()
+		t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
+		t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
 
 		machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment(namespace.Name, rtc.instanceType, rtc.existingAnnotations)
 		Expect(err).ToNot(HaveOccurred())
@@ -428,10 +427,9 @@ func TestReconcile(t *testing.T) {
 			g := NewWithT(tt)
 
 			// Set IRSA environment variables for tests
-			os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
-			os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
-			defer os.Unsetenv("AWS_ROLE_ARN")
-			defer os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+			// Use tt.Setenv to avoid global state mutation
+			tt.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
+			tt.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
 
 			// Create test resources
 			machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment("default", tc.instanceType, tc.existingAnnotations)
@@ -510,14 +508,13 @@ func TestReconcileWithIRSA(t *testing.T) {
 			g := NewWithT(tt)
 
 			// Set up or clear IRSA environment variables
+			// Use tt.Setenv to avoid global state mutation
 			if tc.setIRSAEnvVars {
-				os.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
-				os.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
-				defer os.Unsetenv("AWS_ROLE_ARN")
-				defer os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+				tt.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role")
+				tt.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
 			} else {
-				os.Unsetenv("AWS_ROLE_ARN")
-				os.Unsetenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+				tt.Setenv("AWS_ROLE_ARN", "")
+				tt.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
 			}
 
 			machineDeployment, awsMachineTemplate, cluster, awsCluster, err := newTestMachineDeployment("default", tc.instanceType, make(map[string]string))

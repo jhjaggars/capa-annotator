@@ -329,10 +329,13 @@ func NewValidatedClient(ctrlRuntimeClient client.Client, secretName, namespace, 
 		return nil, err
 	}
 
+	// Get custom endpoint URL for LocalStack/testing
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
+
 	return &awsClient{
-		ec2Client:   ec2.NewFromConfig(cfg),
-		elbClient:   elasticloadbalancing.NewFromConfig(cfg),
-		elbv2Client: elasticloadbalancingv2.NewFromConfig(cfg),
+		ec2Client:   ec2.NewFromConfig(cfg, applyEndpointURL(endpointURL)),
+		elbClient:   elasticloadbalancing.NewFromConfig(cfg, applyEndpointURLForELB(endpointURL)),
+		elbv2Client: elasticloadbalancingv2.NewFromConfig(cfg, applyEndpointURLForELBv2(endpointURL)),
 	}, nil
 }
 
@@ -368,10 +371,25 @@ func newAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 	// the STS client used by credential providers (e.g., IRSA)
 	if endpointURL != "" {
 		klog.Infof("Configuring custom endpoint for all services: %s", endpointURL)
-		// Note: EndpointResolverWithOptions is deprecated, but required for LocalStack IRSA.
-		// The WebIdentityCredentials provider creates its own internal STS client that needs
-		// global endpoint configuration. BaseEndpoint only works for service clients we create
-		// directly. This is only used in testing scenarios where AWS_ENDPOINT_URL is set.
+		// DEPRECATED API USAGE: Using EndpointResolverWithOptions (deprecated in AWS SDK v2)
+		//
+		// Why we need this:
+		// The WebIdentityCredentials provider (used for IRSA) creates its own internal STS client
+		// that requires global endpoint configuration. The modern BaseEndpoint option only affects
+		// service clients we create directly, not internal clients created by credential providers.
+		//
+		// This is ONLY used in testing scenarios where AWS_ENDPOINT_URL is set (LocalStack).
+		// In production deployments, AWS_ENDPOINT_URL is not set and this code path is not executed.
+		//
+		// Migration path:
+		// AWS SDK v2 does not currently provide an alternative API for configuring endpoints in
+		// credential providers. This will require either:
+		// 1. Waiting for AWS SDK to provide a replacement API
+		// 2. Using a custom credential provider that supports endpoint configuration
+		// 3. Restructuring LocalStack tests to avoid IRSA simulation
+		//
+		// TODO: Track AWS SDK v2 releases for endpoint configuration improvements
+		// See: https://github.com/jhjaggars/capa-annotator/issues/64
 		//nolint:staticcheck // SA1019: Deprecated but required for LocalStack IRSA testing
 		configOptions = append(configOptions, config.WithEndpointResolverWithOptions(
 			//nolint:staticcheck // SA1019: Deprecated but required for LocalStack IRSA testing

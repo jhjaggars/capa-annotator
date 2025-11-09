@@ -372,14 +372,10 @@ func TestLocalStackErrorScenarios(t *testing.T) {
 // This is needed because LocalStack init scripts may not run reliably on all platforms.
 func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
 	// Temporarily set static credentials for IAM operations (setup only)
-	// We use os.Setenv/Unsetenv here because we need fine-grained control over when
-	// these credentials are active. t.Setenv() would persist for the entire test.
+	// We use os.Setenv here for the setup phase, then explicitly clear them before returning.
+	// The calling test will use t.Setenv("", "") to keep them unset without global state mutation.
 	os.Setenv("AWS_ACCESS_KEY_ID", "test")
 	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	defer func() {
-		os.Unsetenv("AWS_ACCESS_KEY_ID")
-		os.Unsetenv("AWS_SECRET_ACCESS_KEY")
-	}()
 
 	// Create IAM config for setup operations
 	// Use the modern BaseEndpoint approach instead of deprecated EndpointResolverWithOptions
@@ -443,6 +439,11 @@ func setupLocalStackIRSA(ctx context.Context, t *testing.T) error {
 		return fmt.Errorf("OIDC provider was not found after creation")
 	}
 
+	// Clear the static credentials used for setup
+	// The calling test will use t.Setenv to keep them unset
+	os.Unsetenv("AWS_ACCESS_KEY_ID")
+	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+
 	t.Log("LocalStack IRSA setup complete: OIDC provider and IAM role created and verified")
 	return nil
 }
@@ -476,11 +477,12 @@ func TestLocalStackIRSA(t *testing.T) {
 		return
 	}
 
-	// CRITICAL: Explicitly unset any static credentials that might be set by Makefile
-	// setupLocalStackIRSA already unset its own, but Makefile-level vars might persist
+	// CRITICAL: Explicitly ensure static credentials are NOT set
+	// setupLocalStackIRSA already cleared its own, but Makefile-level vars might persist
 	// Static credentials have higher priority than IRSA in AWS SDK credential chain
-	os.Unsetenv("AWS_ACCESS_KEY_ID")
-	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	// Use t.Setenv("", "") instead of os.Unsetenv to avoid global state mutation
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 
 	// Double-check that static credentials are truly NOT set
 	// This is critical because if they are, IRSA won't be used!
@@ -637,8 +639,9 @@ func TestLocalStackIRSAInvalidToken(t *testing.T) {
 	t.Setenv("AWS_REGION", "us-east-1")
 
 	// CRITICAL: Ensure static credentials are NOT set (IRSA tests only)
-	os.Unsetenv("AWS_ACCESS_KEY_ID")
-	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	// Use t.Setenv("", "") instead of os.Unsetenv to avoid global state mutation
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 
 	t.Run("Missing token file", func(tt *testing.T) {
 		gg := NewWithT(tt)
@@ -723,8 +726,9 @@ func TestLocalStackIRSAWithRegionCache(t *testing.T) {
 	t.Setenv("AWS_REGION", "us-east-1")
 
 	// CRITICAL: Ensure static credentials are NOT set (IRSA tests only)
-	os.Unsetenv("AWS_ACCESS_KEY_ID")
-	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	// Use t.Setenv("", "") instead of os.Unsetenv to avoid global state mutation
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 
 	// Create OIDC provider and IAM role in LocalStack (if not already exists)
 	ctx := context.Background()
