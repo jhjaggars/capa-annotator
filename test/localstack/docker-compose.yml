@@ -22,7 +22,8 @@ services:
       # Note: Update UID (1000) if your user ID is different (run: id -u)
       - ${DOCKER_SOCK:-/run/user/1000/podman/podman.sock}:/var/run/docker.sock:Z
       # Initialization scripts to seed LocalStack with test data
-      - ./init:/etc/localstack/init/ready.d:ro
+      # :Z flag for SELinux relabeling (required on Fedora/RHEL)
+      - ./init:/etc/localstack/init/ready.d:ro,Z
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 5s
