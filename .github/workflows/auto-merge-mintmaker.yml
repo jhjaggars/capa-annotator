@@ -125,7 +125,8 @@ jobs:
 
           while [ $WAITED -lt $MAX_WAIT ]; do
             # Get check runs for the commit
-            CHECK_STATUS=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs --jq '.check_runs | map(select(.name | IN("Run Tests", "Integration Tests", "Lint", "Build"))) | if length == 0 then "none" elif all(.status == "completed") then (if all(.conclusion == "success") then "success" else "failure" end) else "pending" end')
+            # Updated to include new required checks: LocalStack Integration Tests, Dependency Verification, Race Detector
+            CHECK_STATUS=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs --jq '.check_runs | map(select(.name | IN("Run Tests", "Integration Tests", "Lint", "Build", "LocalStack Integration Tests", "Dependency Verification", "Race Detector"))) | if length == 0 then "none" elif all(.status == "completed") then (if all(.conclusion == "success") then "success" else "failure" end) else "pending" end')
 
             echo "Check status: $CHECK_STATUS (waited ${WAITED}s)"
 
