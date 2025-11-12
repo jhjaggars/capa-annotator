@@ -76,8 +76,12 @@ jobs:
 
           echo "Title matches Konflux pattern, validating PR structure..."
 
+          # Set variables to avoid bash word splitting issues
+          PR_NUM="${{ steps.pr.outputs.number }}"
+          REPO="${{ github.repository }}"
+
           # Verify author type is Bot (cannot be spoofed)
-          AUTHOR_TYPE=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json author --jq -r '.author.type')
+          AUTHOR_TYPE=$(gh pr view "$PR_NUM" --repo "$REPO" --json author --jq -r '.author.type')
           if [ "$AUTHOR_TYPE" != "Bot" ]; then
             echo "ERROR: Author type is not Bot: $AUTHOR_TYPE"
             echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
@@ -86,8 +90,8 @@ jobs:
           fi
 
           # Verify commit signature
-          HEAD_SHA=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json headRefOid --jq -r '.headRefOid')
-          VERIFIED=$(gh api repos/${{ github.repository }}/commits/$HEAD_SHA --jq '.commit.verification.verified')
+          HEAD_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq -r '.headRefOid')
+          VERIFIED=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.verification.verified')
           if [ "$VERIFIED" != "true" ]; then
             echo "ERROR: Commit signature not verified"
             echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
@@ -96,7 +100,7 @@ jobs:
           fi
 
           # Get changed files and validate all are .tekton/*.yaml
-          FILES=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json files --jq -r '.files[].path')
+          FILES=$(gh pr view "$PR_NUM" --repo "$REPO" --json files --jq -r '.files[].path')
           for file in $FILES; do
             if [[ ! "$file" =~ ^\.tekton/.*\.yaml$ ]]; then
               echo "ERROR: Non-Tekton file modified: $file"
@@ -107,7 +111,7 @@ jobs:
           done
 
           # Validate image registry namespace (only quay.io/konflux-ci/)
-          DIFF=$(gh pr diff ${{ steps.pr.outputs.number }} --repo ${{ github.repository }})
+          DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO")
           if echo "$DIFF" | grep -E '^\+.*value:.*quay\.io' | grep -qv 'quay.io/konflux-ci/'; then
             echo "ERROR: Non-Konflux registry found in changes"
             echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
