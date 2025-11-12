@@ -80,17 +80,17 @@ jobs:
           PR_NUM="${{ steps.pr.outputs.number }}"
           REPO="${{ github.repository }}"
 
-          # Verify author type is Bot (cannot be spoofed)
-          AUTHOR_TYPE=$(gh pr view "$PR_NUM" --repo "$REPO" --json author --jq -r '.author.type')
-          if [ "$AUTHOR_TYPE" != "Bot" ]; then
-            echo "ERROR: Author type is not Bot: $AUTHOR_TYPE"
+          # Verify author is a bot (cannot be spoofed)
+          IS_BOT=$(gh pr view "$PR_NUM" --repo "$REPO" --json author --jq '.author.is_bot')
+          if [ "$IS_BOT" != "true" ]; then
+            echo "ERROR: Author is not a bot: is_bot=$IS_BOT"
             echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
             echo "validation_error=author_not_bot" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           # Verify commit signature
-          HEAD_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq -r '.headRefOid')
+          HEAD_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid')
           VERIFIED=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.verification.verified')
           if [ "$VERIFIED" != "true" ]; then
             echo "ERROR: Commit signature not verified"
@@ -100,15 +100,15 @@ jobs:
           fi
 
           # Get changed files and validate all are .tekton/*.yaml
-          FILES=$(gh pr view "$PR_NUM" --repo "$REPO" --json files --jq -r '.files[].path')
-          for file in $FILES; do
+          FILES=$(gh pr view "$PR_NUM" --repo "$REPO" --json files --jq '.files[].path')
+          while IFS= read -r file; do
             if [[ ! "$file" =~ ^\.tekton/.*\.yaml$ ]]; then
               echo "ERROR: Non-Tekton file modified: $file"
               echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
               echo "validation_error=invalid_files" >> $GITHUB_OUTPUT
               exit 0
             fi
-          done
+          done <<< "$FILES"
 
           # Validate image registry namespace (only quay.io/konflux-ci/)
           DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO")
