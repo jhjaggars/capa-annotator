@@ -60,12 +60,94 @@ jobs:
             echo "has_no_automerge=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Validate Konflux references PR
+        id: validate_konflux
+        if: steps.pr_details.outputs.is_mintmaker == 'true' && steps.pr_details.outputs.has_no_automerge == 'false' && steps.pr_details.outputs.state == 'OPEN'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="${{ steps.pr_details.outputs.title }}"
+
+          # Check if title matches Konflux references pattern
+          if ! echo "$TITLE" | grep -qiE "update konflux references"; then
+            echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Title matches Konflux pattern, validating PR structure..."
+
+          # Verify author type is Bot (cannot be spoofed)
+          AUTHOR_TYPE=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json author --jq -r '.author.type')
+          if [ "$AUTHOR_TYPE" != "Bot" ]; then
+            echo "ERROR: Author type is not Bot: $AUTHOR_TYPE"
+            echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
+            echo "validation_error=author_not_bot" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Verify commit signature
+          HEAD_SHA=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json headRefOid --jq -r '.headRefOid')
+          VERIFIED=$(gh api repos/${{ github.repository }}/commits/$HEAD_SHA --jq '.commit.verification.verified')
+          if [ "$VERIFIED" != "true" ]; then
+            echo "ERROR: Commit signature not verified"
+            echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
+            echo "validation_error=signature_not_verified" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get changed files and validate all are .tekton/*.yaml
+          FILES=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json files --jq -r '.files[].path')
+          for file in $FILES; do
+            if [[ ! "$file" =~ ^\.tekton/.*\.yaml$ ]]; then
+              echo "ERROR: Non-Tekton file modified: $file"
+              echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
+              echo "validation_error=invalid_files" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+
+          # Validate image registry namespace (only quay.io/konflux-ci/)
+          DIFF=$(gh pr diff ${{ steps.pr.outputs.number }} --repo ${{ github.repository }})
+          if echo "$DIFF" | grep -E '^\+.*value:.*quay\.io' | grep -qv 'quay.io/konflux-ci/'; then
+            echo "ERROR: Non-Konflux registry found in changes"
+            echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
+            echo "validation_error=invalid_registry" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Validate SHA256 digest format
+          if echo "$DIFF" | grep -E '^\+.*@sha256:' | grep -qvE '@sha256:[a-f0-9]{64}'; then
+            echo "ERROR: Invalid digest format"
+            echo "is_konflux_refs=false" >> $GITHUB_OUTPUT
+            echo "validation_error=invalid_digest" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "✅ All Konflux PR validations passed"
+          echo "is_konflux_refs=true" >> $GITHUB_OUTPUT
+
       - name: Detect version change type
         id: version_check
         if: steps.pr_details.outputs.is_mintmaker == 'true' && steps.pr_details.outputs.has_no_automerge == 'false' && steps.pr_details.outputs.state == 'OPEN'
         run: |
           TITLE="${{ steps.pr_details.outputs.title }}"
           echo "Checking PR title: $TITLE"
+
+          # Check for validated Konflux references update FIRST
+          if [ "${{ steps.validate_konflux.outputs.is_konflux_refs }}" = "true" ]; then
+            echo "✅ Validated Konflux references update detected"
+            echo "is_major=false" >> $GITHUB_OUTPUT
+            echo "reason=konflux_references_validated" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Log validation failures for security audit
+          if [ "${{ steps.validate_konflux.outputs.validation_error }}" != "" ]; then
+            echo "⚠️ Konflux PR validation failed: ${{ steps.validate_konflux.outputs.validation_error }}"
+            echo "is_major=true" >> $GITHUB_OUTPUT
+            echo "reason=konflux_validation_failed_${{ steps.validate_konflux.outputs.validation_error }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
           # Check if this is a digest/hash update (e.g., "update X digest to abc123")
           # These are safe to auto-merge as they're typically minor updates
