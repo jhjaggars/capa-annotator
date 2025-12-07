@@ -1,8 +1,6 @@
 module github.com/jhjaggars/capa-annotator
 
-go 1.24.0
-
-toolchain go1.24.4
+go 1.24.9
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.6
@@ -53,7 +51,7 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/pprof v0.0.0-20251206212654-f1b79c6b8239 // indirect
+	github.com/google/pprof v0.0.0-20251207070906-2866da1ceaff // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
